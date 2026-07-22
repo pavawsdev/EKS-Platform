@@ -1,0 +1,14 @@
+environment: test
+replicaCount: 2
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4
+image:
+  tag: "latest"
+vault:
+  enabled: true
+  role: "backend-test"
+  addr: "https://vault.test.example.internal"
+  dbSecretPath: "secret/data/test/db"
+tags:
+  environment: test

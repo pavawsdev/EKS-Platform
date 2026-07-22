@@ -1,0 +1,32 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+.terraform.lock.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Node
+node_modules/
+build/
+dist/
+npm-debug.log*
+.env
+.env.*
+
+# Secrets - never commit these
+*.auto.tfvars
+secrets.tfvars
+.vault-token
+vault-recovery-keys.txt
+github-token.txt
+
+# Misc
+.DS_Store
+*.swp

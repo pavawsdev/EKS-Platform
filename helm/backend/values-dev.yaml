@@ -1,0 +1,13 @@
+environment: dev
+replicaCount: 1
+autoscaling:
+  enabled: false
+image:
+  tag: "latest"
+vault:
+  enabled: true
+  role: "backend-dev"
+  addr: "https://vault.dev.example.internal"
+  dbSecretPath: "secret/data/dev/db"
+tags:
+  environment: dev

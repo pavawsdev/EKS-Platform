@@ -1,0 +1,8 @@
+environment: test
+replicaCount: 2
+image:
+  tag: "latest"
+ingress:
+  host: test.example.internal
+tags:
+  environment: test

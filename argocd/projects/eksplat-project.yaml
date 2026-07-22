@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: eksplat
+  namespace: argocd
+spec:
+  description: EKS platform demo - frontend and backend applications
+  sourceRepos:
+    - "https://github.com/pavawsdev/EKS-Platform.git"
+  destinations:
+    - namespace: "*"
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  roles:
+    - name: read-only
+      policies:
+        - p, proj:eksplat:read-only, applications, get, eksplat/*, allow
+      groups:
+        - eksplat:developers

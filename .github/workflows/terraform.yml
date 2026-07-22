@@ -1,0 +1,192 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches: [dev, test]
+    paths:
+      - "terraform/**"
+  pull_request:
+    branches: [dev, test]
+    paths:
+      - "terraform/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to target"
+        required: true
+        type: choice
+        options: [dev, test]
+      action:
+        description: "Terraform action"
+        required: true
+        type: choice
+        options: [plan, apply, destroy]
+
+permissions:
+  id-token: write   # OIDC federation to AWS - no long-lived AWS keys stored in GitHub
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.7.5"
+  TF_WORKING_DIR: terraform/environments
+
+jobs:
+  # Static analysis / security scanning always runs first,
+  # and gates plan/apply - see security-scan.yml for the full suite.
+  security:
+    uses: ./.github/workflows/security-scan.yml
+
+  determine-env:
+    needs: security
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+    steps:
+      - id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" == "test" ]; then
+            echo "environment=test" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  plan:
+    needs: determine-env
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine-env.outputs.environment }}-plan
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      # Vault token is the bootstrap/root token from the one-time
+      # `vault operator init` - stored as a GitHub secret, never in tfvars.
+      # See README "Vault bootstrap".
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Select/Create Workspace
+        run: |
+          terraform workspace select ${{ needs.determine-env.outputs.environment }} \
+          || terraform workspace new ${{ needs.determine-env.outputs.environment }}
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file="tfvars/${{ needs.determine-env.outputs.environment }}.tfvars" \
+            -out=tfplan \
+            -no-color | tee plan_output.txt
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8').slice(0, 60000);
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform Plan (${{ needs.determine-env.outputs.environment }})\n\`\`\`\n${plan}\n\`\`\``
+            });
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.determine-env.outputs.environment }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+  apply:
+    needs: [determine-env, plan]
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    # Attach required-reviewer rules to the "test" GitHub Environment if you
+    # want a manual approval gate before infra changes land there.
+    environment: ${{ needs.determine-env.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Select Workspace
+        run: terraform workspace select ${{ needs.determine-env.outputs.environment }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.determine-env.outputs.environment }}
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+  destroy:
+    needs: determine-env
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine-env.outputs.environment }}-destroy
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      # Needed so the vault provider can authenticate to tear down the
+      # vault_kv_secret_v2 / auth backend / policy resources cleanly.
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - run: terraform init
+      - run: terraform workspace select ${{ needs.determine-env.outputs.environment }}
+      - run: |
+          terraform destroy -auto-approve \
+            -var-file="tfvars/${{ needs.determine-env.outputs.environment }}.tfvars"
