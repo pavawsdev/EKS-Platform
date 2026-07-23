@@ -54,7 +54,7 @@ variable "environment_config" {
   description = "Per-environment (dev/test) configuration, keyed by workspace name"
   type = map(object({
     vpc_cidr               = string
-    azs                     = list(string)
+    azs                    = list(string)
     public_subnet_cidrs    = list(string)
     private_subnet_cidrs   = list(string)
     database_subnet_cidrs  = list(string)

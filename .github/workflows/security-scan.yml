@@ -50,6 +50,27 @@ jobs:
           framework: terraform
           output_format: sarif
           output_file_path: checkov.sarif
+          # Several checks depend on values that only exist in dev.tfvars
+          # (environment_config has no default) - without this, checkov
+          # can't resolve them and falls back to conservative module
+          # defaults, producing false positives (e.g. the EKS public
+          # endpoint CIDR check).
+          var_file: terraform/environments/tfvars/dev.tfvars
+          # These 5 checks are intentionally, permanently skipped repo-wide
+          # (each also has an inline #checkov:skip with the full reasoning
+          # at its resource - some of these run as graph-based checks in
+          # this checkov version and don't honor inline comments, hence
+          # doing it here too):
+          #   CKV_AWS_260 - the ALB is a public web app; port 80 exists to
+          #     redirect to HTTPS, open-to-internet is the intended design
+          #   CKV2_AWS_5  - the ALB SG is attached by the in-cluster AWS
+          #     Load Balancer Controller, outside Terraform's static graph
+          #   CKV_AWS_355 - every remaining "*" Resource is an AWS list/
+          #     describe action with no resource-level permissions support
+          #   CKV2_AWS_57 - no GitHub API exists to rotate a PAT in place
+          #   CKV_AWS_39  - EKS public endpoint must stay reachable (CIDR-
+          #     restricted) since GitHub-hosted runners aren't in the VPC
+          skip_check: CKV_AWS_260,CKV2_AWS_5,CKV_AWS_355,CKV2_AWS_57,CKV_AWS_39
           soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3

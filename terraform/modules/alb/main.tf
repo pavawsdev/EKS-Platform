@@ -3,6 +3,8 @@
 # dynamically by the AWS Load Balancer Controller
 # via Ingress resources (see helm/ charts).
 ############################################
+#checkov:skip=CKV_AWS_260:Internet-facing ALB intentionally accepts HTTP on 80 (redirected to HTTPS at the listener) and HTTPS on 443 from the whole internet - that's the point of a public web app
+#checkov:skip=CKV2_AWS_5:Attached to ALB(s) created dynamically by the in-cluster AWS Load Balancer Controller via Ingress annotations, not a Terraform-managed aws_lb resource - checkov's static graph can't see that attachment
 resource "aws_security_group" "alb" {
   name_prefix = "${var.name_prefix}-alb-"
   vpc_id      = var.vpc_id
@@ -25,10 +27,11 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
+    description = "Outbound to VPC-internal targets only (pods/nodes behind the ALB)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = merge(var.tags, {
@@ -144,4 +147,66 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   tags = var.tags
+}
+
+############################################
+# WAF logging - the log group name MUST start
+# with "aws-waf-logs-", it's an AWS requirement
+############################################
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+resource "aws_kms_key" "logs" {
+  count                   = var.enable_waf ? 1 : 0
+  description             = "KMS key for ${var.name_prefix} CloudWatch Logs encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = var.tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchLogsEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${data.aws_region.current.name}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:*"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "waf" {
+  count             = var.enable_waf ? 1 : 0
+  name              = "aws-waf-logs-${var.name_prefix}"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.logs[0].arn
+  tags              = var.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "this" {
+  count                   = var.enable_waf ? 1 : 0
+  resource_arn            = aws_wafv2_web_acl.this[0].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf[0].arn]
 }

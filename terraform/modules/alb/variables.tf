@@ -6,6 +6,10 @@ variable "vpc_id" {
   type = string
 }
 
+variable "vpc_cidr" {
+  type = string
+}
+
 variable "domain_name" {
   description = "Placeholder domain used for the ACM certificate and ingress host rules (e.g. app.example.com). Swap for a real domain later."
   type        = string

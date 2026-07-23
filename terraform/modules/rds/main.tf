@@ -45,10 +45,11 @@ resource "aws_security_group" "rds" {
   }
 
   egress {
+    description = "Outbound to VPC-internal targets only - RDS never needs to reach the internet"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = merge(var.tags, {
@@ -69,14 +70,64 @@ resource "aws_db_parameter_group" "postgres" {
     value = "1"
   }
 
+  # Enforces SSL/TLS for every client connection - the backend's pg client
+  # already connects with ssl: { rejectUnauthorized: true } (apps/backend/index.js).
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
+  }
+
   tags = var.tags
 }
+
+data "aws_caller_identity" "current" {}
 
 resource "aws_kms_key" "rds" {
   description             = "KMS key for ${var.name_prefix} RDS storage encryption"
   deletion_window_in_days = 30
   enable_key_rotation     = true
   tags                    = var.tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      }
+    ]
+  })
+}
+
+############################################
+# Enhanced monitoring - lets RDS publish OS-level
+# metrics (CPU, memory, disk) to CloudWatch Logs
+############################################
+data "aws_iam_policy_document" "rds_monitoring_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["monitoring.rds.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "rds_monitoring" {
+  name               = "${var.name_prefix}-rds-monitoring"
+  assume_role_policy = data.aws_iam_policy_document.rds_monitoring_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring" {
+  role       = aws_iam_role.rds_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
 resource "aws_db_instance" "postgres" {
@@ -108,8 +159,16 @@ resource "aws_db_instance" "postgres" {
   deletion_protection       = var.deletion_protection
   skip_final_snapshot       = !var.deletion_protection
   final_snapshot_identifier = var.deletion_protection ? "${var.name_prefix}-postgres-final" : null
+  copy_tags_to_snapshot     = true
 
-  auto_minor_version_upgrade = true
+  auto_minor_version_upgrade          = true
+  iam_database_authentication_enabled = true
+
+  performance_insights_enabled    = true
+  performance_insights_kms_key_id = aws_kms_key.rds.arn
+
+  monitoring_interval = 60
+  monitoring_role_arn = aws_iam_role.rds_monitoring.arn
 
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
 
