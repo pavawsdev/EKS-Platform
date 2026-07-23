@@ -6,8 +6,9 @@ variable "vpc_id" {
   type = string
 }
 
-variable "public_subnet_id" {
-  type = string
+variable "private_subnet_id" {
+  description = "Bastion lives in a private subnet - it's reached via SSM Session Manager (outbound-only through the NAT gateway), never needs a public IP or inbound internet access"
+  type        = string
 }
 
 variable "instance_type" {

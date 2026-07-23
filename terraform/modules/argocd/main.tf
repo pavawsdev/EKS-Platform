@@ -29,8 +29,8 @@ resource "helm_release" "argocd" {
           enabled          = true
           ingressClassName = "alb"
           annotations = {
-            "alb.ingress.kubernetes.io/scheme"      = "internet-facing"
-            "alb.ingress.kubernetes.io/target-type" = "ip"
+            "alb.ingress.kubernetes.io/scheme"       = "internet-facing"
+            "alb.ingress.kubernetes.io/target-type"  = "ip"
             "alb.ingress.kubernetes.io/listen-ports" = jsonencode([{ HTTP = 80 }, { HTTPS = 443 }])
           }
           hosts = ["argocd.${var.domain_name}"]
@@ -53,8 +53,8 @@ resource "kubectl_manifest" "app_of_apps" {
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name      = "app-of-apps-${var.environment}"
-      namespace = kubernetes_namespace.argocd.metadata[0].name
+      name       = "app-of-apps-${var.environment}"
+      namespace  = kubernetes_namespace.argocd.metadata[0].name
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {

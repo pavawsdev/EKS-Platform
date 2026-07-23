@@ -74,6 +74,15 @@ resource "aws_iam_role" "cluster_autoscaler" {
   tags               = var.tags
 }
 
+# Resource: "*" on both statements is unavoidable here, not an oversight:
+# - The describe/list actions in the first statement are account-wide read
+#   actions with no resource-level permissions in AWS's IAM model.
+# - The write actions in the second statement can't be scoped to a specific
+#   ASG ARN (the node group creates the ASG, so its ARN isn't known to this
+#   policy - a circular dependency), so AWS's own official cluster-autoscaler
+#   IAM policy instead scopes them via the ResourceTag condition below,
+#   matching the autodiscovery tag EKS puts on the node group's ASG.
+#checkov:skip=CKV_AWS_355:see comment above - AWS's official cluster-autoscaler policy uses Resource="*" scoped via a ResourceTag condition, not an ARN, because the ASG ARN isn't known ahead of time
 resource "aws_iam_policy" "cluster_autoscaler" {
   name = "${var.name_prefix}-cluster-autoscaler-policy"
 
@@ -87,12 +96,23 @@ resource "aws_iam_policy" "cluster_autoscaler" {
           "autoscaling:DescribeAutoScalingInstances",
           "autoscaling:DescribeLaunchConfigurations",
           "autoscaling:DescribeTags",
-          "autoscaling:SetDesiredCapacity",
-          "autoscaling:TerminateInstanceInAutoScalingGroup",
           "ec2:DescribeLaunchTemplateVersions",
           "ec2:DescribeInstanceTypes"
         ]
         Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+          }
+        }
       }
     ]
   })
@@ -174,6 +194,7 @@ resource "aws_iam_role" "external_dns" {
   tags               = var.tags
 }
 
+#checkov:skip=CKV_AWS_355:route53:ListHostedZones and route53:ListResourceRecordSets are account-wide list actions with no resource-level permissions in AWS's IAM model - "*" is the only valid Resource. ChangeResourceRecordSets (the actual write action) is already scoped to hostedzone ARNs above.
 resource "aws_iam_policy" "external_dns" {
   name = "${var.name_prefix}-external-dns-policy"
 

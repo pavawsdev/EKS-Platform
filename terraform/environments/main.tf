@@ -1,18 +1,20 @@
+data "aws_caller_identity" "current" {}
+
 ############################################
 # VPC
 ############################################
 module "vpc" {
   source = "../modules/vpc"
 
-  name_prefix            = local.name_prefix
-  cluster_name           = local.cluster_name
-  vpc_cidr               = local.env_config.vpc_cidr
-  azs                    = local.env_config.azs
-  public_subnet_cidrs    = local.env_config.public_subnet_cidrs
-  private_subnet_cidrs   = local.env_config.private_subnet_cidrs
-  database_subnet_cidrs  = local.env_config.database_subnet_cidrs
-  single_nat_gateway     = local.env_config.single_nat_gateway
-  tags                   = local.common_tags
+  name_prefix           = local.name_prefix
+  cluster_name          = local.cluster_name
+  vpc_cidr              = local.env_config.vpc_cidr
+  azs                   = local.env_config.azs
+  public_subnet_cidrs   = local.env_config.public_subnet_cidrs
+  private_subnet_cidrs  = local.env_config.private_subnet_cidrs
+  database_subnet_cidrs = local.env_config.database_subnet_cidrs
+  single_nat_gateway    = local.env_config.single_nat_gateway
+  tags                  = local.common_tags
 }
 
 ############################################
@@ -21,10 +23,11 @@ module "vpc" {
 module "eks" {
   source = "../modules/eks"
 
-  name_prefix                 = local.name_prefix
-  cluster_name                = local.cluster_name
+  name_prefix                  = local.name_prefix
+  cluster_name                 = local.cluster_name
   cluster_version              = var.eks_cluster_version
   vpc_id                       = module.vpc.vpc_id
+  vpc_cidr                     = module.vpc.vpc_cidr
   private_subnet_ids           = module.vpc.private_subnet_ids
   public_subnet_ids            = module.vpc.public_subnet_ids
   endpoint_public_access       = local.env_config.endpoint_public_access
@@ -52,11 +55,11 @@ module "eks" {
 module "oidc" {
   source = "../modules/oidc"
 
-  name_prefix        = local.name_prefix
-  cluster_name       = local.cluster_name
-  oidc_provider_url  = module.eks.oidc_provider_url
-  oidc_provider_arn  = module.eks.oidc_provider_arn
-  tags               = local.common_tags
+  name_prefix       = local.name_prefix
+  cluster_name      = local.cluster_name
+  oidc_provider_url = module.eks.oidc_provider_url
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  tags              = local.common_tags
 }
 
 ############################################
@@ -65,12 +68,13 @@ module "oidc" {
 module "alb" {
   source = "../modules/alb"
 
-  name_prefix             = local.name_prefix
-  vpc_id                  = module.vpc.vpc_id
-  domain_name             = var.domain_name
-  create_acm_certificate  = local.env_config.create_acm_cert
-  enable_waf              = local.env_config.enable_waf
-  tags                    = local.common_tags
+  name_prefix            = local.name_prefix
+  vpc_id                 = module.vpc.vpc_id
+  vpc_cidr               = module.vpc.vpc_cidr
+  domain_name            = var.domain_name
+  create_acm_certificate = local.env_config.create_acm_cert
+  enable_waf             = local.env_config.enable_waf
+  tags                   = local.common_tags
 }
 
 ############################################
@@ -80,15 +84,15 @@ module "alb" {
 module "add_ons" {
   source = "../modules/add-ons"
 
-  cluster_name                 = module.eks.cluster_name
-  vpc_id                        = module.vpc.vpc_id
-  aws_region                    = var.aws_region
-  lb_controller_role_arn        = module.oidc.lb_controller_role_arn
-  cluster_autoscaler_role_arn   = module.oidc.cluster_autoscaler_role_arn
-  external_dns_role_arn         = module.oidc.external_dns_role_arn
-  enable_external_dns           = local.env_config.enable_external_dns
-  hosted_zone_id                = local.env_config.hosted_zone_id
-  tags                          = local.common_tags
+  cluster_name                = module.eks.cluster_name
+  vpc_id                      = module.vpc.vpc_id
+  aws_region                  = var.aws_region
+  lb_controller_role_arn      = module.oidc.lb_controller_role_arn
+  cluster_autoscaler_role_arn = module.oidc.cluster_autoscaler_role_arn
+  external_dns_role_arn       = module.oidc.external_dns_role_arn
+  enable_external_dns         = local.env_config.enable_external_dns
+  hosted_zone_id              = local.env_config.hosted_zone_id
+  tags                        = local.common_tags
 
   depends_on = [module.eks]
 }
@@ -125,11 +129,11 @@ module "vault" {
   oidc_provider_url             = module.eks.oidc_provider_url
   domain_name                   = var.domain_name
   configure_vault               = var.configure_vault
-  kubernetes_host                = module.eks.cluster_endpoint
-  kubernetes_ca_cert             = base64decode(module.eks.cluster_ca_data)
+  kubernetes_host               = module.eks.cluster_endpoint
+  kubernetes_ca_cert            = base64decode(module.eks.cluster_ca_data)
   backend_service_account_name  = "backend"
   frontend_service_account_name = "frontend"
-  tags                           = local.common_tags
+  tags                          = local.common_tags
 
   depends_on = [module.add_ons]
 }
@@ -142,10 +146,41 @@ module "vault" {
 # supplied via TF_VAR_github_token in CI; never
 # committed to a tfvars file.
 ############################################
+resource "aws_kms_key" "github_token" {
+  count                   = var.github_token != "" ? 1 : 0
+  description             = "KMS key for ${local.name_prefix} GitHub token secret"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = local.common_tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      }
+    ]
+  })
+}
+
+# Automatic rotation (CKV2_AWS_57) is deliberately not implemented: this
+# secret is a manually-issued GitHub PAT, and GitHub has no API to rotate
+# a PAT's value in place - a "rotation" Lambda here could only generate a
+# new AWS-side random string, not a working GitHub credential, so it would
+# add cost and complexity without adding real security. The correct fix is
+# migrating CI's GitOps auth to a GitHub App installation token (auto-expires
+# hourly, fetched fresh every run) instead of a long-lived PAT - a bigger
+# change than this hardening pass, tracked as a follow-up.
+#checkov:skip=CKV2_AWS_57:no GitHub API exists to rotate a PAT in place; real fix is switching to GitHub App installation tokens (see comment above)
 resource "aws_secretsmanager_secret" "github_token" {
   count                   = var.github_token != "" ? 1 : 0
   name                    = "${local.name_prefix}-github-token"
   recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.github_token[0].id
   tags                    = local.common_tags
 }
 
@@ -177,7 +212,7 @@ module "bastion" {
 
   name_prefix       = local.name_prefix
   vpc_id            = module.vpc.vpc_id
-  public_subnet_id  = module.vpc.public_subnet_ids[0]
+  private_subnet_id = module.vpc.private_subnet_ids[0]
   allowed_ssh_cidrs = var.allowed_ssh_cidrs
   key_name          = var.ec2_key_name
   cluster_name      = local.cluster_name

@@ -50,6 +50,12 @@ jobs:
           framework: terraform
           output_format: sarif
           output_file_path: checkov.sarif
+          # Several checks depend on values that only exist in dev.tfvars
+          # (environment_config has no default) - without this, checkov
+          # can't resolve them and falls back to conservative module
+          # defaults, producing false positives (e.g. the EKS public
+          # endpoint CIDR check).
+          var_file: terraform/environments/tfvars/dev.tfvars
           soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3

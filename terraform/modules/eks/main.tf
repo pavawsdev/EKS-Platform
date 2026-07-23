@@ -29,6 +29,9 @@ resource "aws_iam_role_policy_attachment" "cluster_vpc_resource_controller" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
 }
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 ############################################
 # Cluster Security Group (extra rules on top of EKS-managed SG)
 ############################################
@@ -38,10 +41,11 @@ resource "aws_security_group" "cluster" {
   description = "Additional security group for EKS control plane ENIs"
 
   egress {
+    description = "Outbound to VPC-internal targets only (worker nodes, pods)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   tags = merge(var.tags, {
@@ -58,7 +62,8 @@ resource "aws_security_group" "cluster" {
 ############################################
 resource "aws_cloudwatch_log_group" "cluster" {
   name              = "/aws/eks/${var.cluster_name}/cluster"
-  retention_in_days = 30
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.eks.arn
   tags              = var.tags
 }
 
@@ -100,6 +105,39 @@ resource "aws_kms_key" "eks" {
   deletion_window_in_days = 30
   enable_key_rotation     = true
   tags                    = var.tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchLogsEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${data.aws_region.current.name}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:*"
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_kms_alias" "eks" {
