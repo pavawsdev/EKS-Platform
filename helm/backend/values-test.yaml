@@ -4,7 +4,7 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 4
 image:
-  tag: "latest"
+  tag: "initial"
 vault:
   enabled: true
   role: "backend-test"

@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: REPLACE_WITH_ECR_REGISTRY/eksplat-backend
-  tag: "latest"
+  tag: "initial" # CI overwrites this with a commit-sha tag on every build; never left as "latest"
   pullPolicy: IfNotPresent
 
 service:
@@ -30,7 +30,7 @@ podSecurityContext:
 
 securityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop: ["ALL"]
 

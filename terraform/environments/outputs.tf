@@ -55,5 +55,6 @@ output "waf_web_acl_arn" {
 }
 
 output "github_token_secret_arn" {
-  value = var.github_token != "" ? aws_secretsmanager_secret.github_token[0].arn : "not created (github_token not supplied)"
+  value     = var.github_token != "" ? aws_secretsmanager_secret.github_token[0].arn : "not created (github_token not supplied)"
+  sensitive = true
 }

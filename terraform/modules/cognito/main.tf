@@ -57,7 +57,7 @@ resource "aws_cognito_user_pool_client" "this" {
 
   generate_secret = true
 
-  allowed_oauth_flows                 = ["code"]
+  allowed_oauth_flows                  = ["code"]
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
 
@@ -96,20 +96,20 @@ resource "vault_kv_secret_v2" "cognito" {
   name  = "${var.environment}/cognito"
 
   data_json = jsonencode({
-    user_pool_id = aws_cognito_user_pool.this.id
-    client_id    = aws_cognito_user_pool_client.this.id
+    user_pool_id  = aws_cognito_user_pool.this.id
+    client_id     = aws_cognito_user_pool_client.this.id
     client_secret = aws_cognito_user_pool_client.this.client_secret
     domain        = aws_cognito_user_pool_domain.this.domain
   })
 }
 
 resource "aws_cognito_identity_pool" "this" {
-  identity_pool_name              = "${var.name_prefix}-identity-pool"
+  identity_pool_name               = "${var.name_prefix}-identity-pool"
   allow_unauthenticated_identities = false
 
   cognito_identity_providers {
     client_id               = aws_cognito_user_pool_client.this.id
-    provider_name            = aws_cognito_user_pool.this.endpoint
+    provider_name           = aws_cognito_user_pool.this.endpoint
     server_side_token_check = true
   }
 
