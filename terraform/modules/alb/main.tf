@@ -153,10 +153,55 @@ resource "aws_wafv2_web_acl" "this" {
 # WAF logging - the log group name MUST start
 # with "aws-waf-logs-", it's an AWS requirement
 ############################################
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+resource "aws_kms_key" "logs" {
+  count                   = var.enable_waf ? 1 : 0
+  description             = "KMS key for ${var.name_prefix} CloudWatch Logs encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = var.tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchLogsEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${data.aws_region.current.name}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:*"
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "waf" {
   count             = var.enable_waf ? 1 : 0
   name              = "aws-waf-logs-${var.name_prefix}"
   retention_in_days = 365
+  kms_key_id        = aws_kms_key.logs[0].arn
   tags              = var.tags
 }
 
