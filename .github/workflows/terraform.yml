@@ -26,6 +26,7 @@ permissions:
   id-token: write   # OIDC federation to AWS - no long-lived AWS keys stored in GitHub
   contents: read
   pull-requests: write
+  security-events: write   # required to call security-scan.yml, which uploads SARIF results
 
 env:
   TF_VERSION: "1.7.5"
