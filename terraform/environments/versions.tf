@@ -38,10 +38,10 @@ terraform {
   # workspace_key_prefix, so each gets its own state file:
   #   s3://<bucket>/env:/<workspace>/eks-platform/terraform.tfstate
   backend "s3" {
-    bucket               = "REPLACE_WITH_YOUR_TF_STATE_BUCKET"
+    bucket               = "eksplat-tfstate-887047732645"
     key                  = "eks-platform/terraform.tfstate"
     region               = "ap-south-1"
-    dynamodb_table       = "REPLACE_WITH_YOUR_TF_LOCK_TABLE"
+    dynamodb_table       = "eksplat-tfstate-lock"
     encrypt              = true
     workspace_key_prefix = "env"
   }
