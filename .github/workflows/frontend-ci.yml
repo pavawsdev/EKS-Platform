@@ -32,7 +32,12 @@ jobs:
           node-version: "20"
           cache: "npm"
           cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
-      - run: npm ci
+      # npm ci deliberately not used here: react-scripts (Create React
+      # App) is unmaintained and its transitive dependency tree no longer
+      # resolves consistently enough for npm ci's strict lockfile check
+      # against a current npm registry. npm install is lenient about that
+      # version drift and just works - acceptable tradeoff for this app.
+      - run: npm install
       - run: npm run lint --if-present
       - run: npm test -- --watchAll=false --passWithNoTests
       - run: npm run build
