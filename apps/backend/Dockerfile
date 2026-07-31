@@ -1,12 +1,12 @@
 # --- build stage ---
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 
 # --- runtime stage ---
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 COPY --from=build /app /app
