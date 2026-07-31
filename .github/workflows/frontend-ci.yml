@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - "apps/frontend/**"
+  workflow_dispatch: {}
 
 permissions:
   id-token: write
@@ -44,7 +45,7 @@ jobs:
 
   build-and-push:
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -78,18 +79,21 @@ jobs:
           image-ref: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
           severity: CRITICAL,HIGH
           exit-code: "1"
-          format: sarif
-          # trivy-action v0.36.0's default bundled Trivy (v0.70.0) crashes
-          # while writing SARIF output for both images here (no vulns/
-          # summary printed, no file written) - forcing the latest Trivy
-          # CLI release fixes it.
+          # format: sarif crashed here (both Trivy v0.70.0 and v0.72.0,
+          # same crash point either way) - trivy-action's SARIF-report
+          # wrapper is a separate code path from plain vulnerability
+          # detection, so switched to table + plain artifact upload to
+          # sidestep it. Still gates the push via exit-code above.
+          format: table
           version: v0.72.0
-          output: trivy-image.sarif
+          scanners: vuln
+          output: trivy-report.txt
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          sarif_file: ${{ env.WORKING_DIR }}/trivy-image.sarif
+          name: trivy-report-frontend
+          path: ${{ env.WORKING_DIR }}/trivy-report.txt
 
       - name: Push image (only after scan passes)
         run: |
