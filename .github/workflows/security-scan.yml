@@ -111,6 +111,8 @@ jobs:
           severity: CRITICAL,HIGH
           format: sarif
           output: trivy-fs.sarif
+          # see frontend-ci.yml/backend-ci.yml for why this is pinned
+          version: v0.72.0
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
