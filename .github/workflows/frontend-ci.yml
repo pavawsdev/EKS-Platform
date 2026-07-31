@@ -86,7 +86,7 @@ jobs:
           # sidestep it. Still gates the push via exit-code above.
           format: table
           version: v0.72.0
-          scanners: vuln
+          vuln-type: os,library
           output: trivy-report.txt
 
       - uses: actions/upload-artifact@v4
