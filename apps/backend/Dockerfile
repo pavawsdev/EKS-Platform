@@ -1,3 +1,7 @@
+# Node 22: Node 20 is past its LTS security-support window, 22 is in
+# active LTS maintenance. Alpine, not slim: no native (compiled)
+# dependencies in package.json, so alpine's smaller footprint has no
+# glibc-compatibility downside here.
 # --- build stage ---
 FROM node:22-alpine AS build
 WORKDIR /app
