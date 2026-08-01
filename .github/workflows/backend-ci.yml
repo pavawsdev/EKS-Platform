@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - "apps/backend/**"
+  workflow_dispatch: {}
 
 permissions:
   id-token: write
@@ -38,7 +39,7 @@ jobs:
 
   build-and-push:
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -66,24 +67,34 @@ jobs:
           docker build -t ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }} \
                        -t ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest .
 
+      # Scanning image-ref directly here made Trivy find the freshly-built
+      # tag in the local Docker daemon and scan it through the docker
+      # socket, which crashed reliably (silent death mid-scan, no output)
+      # - confirmed by a diagnostic job that scanned the same base images
+      # successfully via Trivy's remote-registry client instead. Exporting
+      # to a tar archive and scanning that sidesteps the daemon-socket
+      # path entirely.
+      - name: Save image to tarball
+        run: |
+          docker save ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }} \
+            -o trivy-image-input.tar
+
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
+          input: ${{ env.WORKING_DIR }}/trivy-image-input.tar
           severity: CRITICAL,HIGH
           exit-code: "1"
-          format: sarif
-          # trivy-action v0.36.0's default bundled Trivy (v0.70.0) crashes
-          # while writing SARIF output for both images here (no vulns/
-          # summary printed, no file written) - forcing the latest Trivy
-          # CLI release fixes it.
+          format: table
           version: v0.72.0
-          output: trivy-image.sarif
+          vuln-type: os,library
+          output: ${{ env.WORKING_DIR }}/trivy-report.txt
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          sarif_file: ${{ env.WORKING_DIR }}/trivy-image.sarif
+          name: trivy-report-backend
+          path: ${{ env.WORKING_DIR }}/trivy-report.txt
 
       - name: Push image (only after scan passes)
         run: |
