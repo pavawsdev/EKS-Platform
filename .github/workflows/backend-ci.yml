@@ -138,3 +138,22 @@ jobs:
           git add helm/backend/values-*.yaml
           git commit -m "ci: bump backend image to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]" || echo "no changes"
           git push
+
+  trivy-diagnostic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - "nginxinc/nginx-unprivileged:1.27-alpine"
+          - "node:22-alpine"
+    steps:
+      - name: Scan ${{ matrix.image }} directly (no build, no ECR)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: table
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          version: v0.72.0
