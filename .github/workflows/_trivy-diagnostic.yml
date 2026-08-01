@@ -1,0 +1,23 @@
+name: Trivy Diagnostic (temporary)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  scan-base-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - "nginxinc/nginx-unprivileged:1.27-alpine"
+          - "node:22-alpine"
+    steps:
+      - name: Scan ${{ matrix.image }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: table
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+          version: v0.72.0
