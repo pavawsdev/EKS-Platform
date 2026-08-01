@@ -12,6 +12,11 @@ COPY . .
 FROM node:24-alpine
 WORKDIR /app
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# npm/npx/corepack are unused at runtime (only `node index.js` runs) -
+# removing them drops their bundled node_modules entirely, which is
+# where CVE findings kept turning up regardless of Node version.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=build /app /app
 USER appuser
 EXPOSE 8080
