@@ -67,21 +67,28 @@ jobs:
           docker build -t ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }} \
                        -t ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest .
 
+      # Scanning image-ref directly here made Trivy find the freshly-built
+      # tag in the local Docker daemon and scan it through the docker
+      # socket, which crashed reliably (silent death mid-scan, no output)
+      # - confirmed by a diagnostic job that scanned the same base images
+      # successfully via Trivy's remote-registry client instead. Exporting
+      # to a tar archive and scanning that sidesteps the daemon-socket
+      # path entirely.
+      - name: Save image to tarball
+        run: |
+          docker save ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }} \
+            -o trivy-image-input.tar
+
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.image_tag }}
+          input: ${{ env.WORKING_DIR }}/trivy-image-input.tar
           severity: CRITICAL,HIGH
           exit-code: "1"
-          # format: sarif crashed here (both Trivy v0.70.0 and v0.72.0,
-          # same crash point either way) - trivy-action's SARIF-report
-          # wrapper is a separate code path from plain vulnerability
-          # detection, so switched to table + plain artifact upload to
-          # sidestep it. Still gates the push via exit-code above.
           format: table
           version: v0.72.0
           vuln-type: os,library
-          output: trivy-report.txt
+          output: ${{ env.WORKING_DIR }}/trivy-report.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
