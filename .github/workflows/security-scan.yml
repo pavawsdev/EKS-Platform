@@ -70,7 +70,9 @@ jobs:
           #   CKV2_AWS_57 - no GitHub API exists to rotate a PAT in place
           #   CKV_AWS_39  - EKS public endpoint must stay reachable (CIDR-
           #     restricted) since GitHub-hosted runners aren't in the VPC
-          skip_check: CKV_AWS_260,CKV2_AWS_5,CKV_AWS_355,CKV2_AWS_57,CKV_AWS_39
+          #   CKV_AWS_51  - ECR tags must stay mutable so CI can re-push a
+          #     floating :latest tag alongside each commit-sha tag
+          skip_check: CKV_AWS_260,CKV2_AWS_5,CKV_AWS_355,CKV2_AWS_57,CKV_AWS_39,CKV_AWS_51
           soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3
