@@ -168,6 +168,7 @@ resource "aws_kms_key" "ecr" {
   })
 }
 
+#checkov:skip=CKV_AWS_51:mutable tags are required so CI can re-push a floating :latest tag alongside each commit-sha tag
 resource "aws_ecr_repository" "this" {
   for_each = local.environment == "dev" ? toset(["frontend", "backend"]) : toset([])
 
