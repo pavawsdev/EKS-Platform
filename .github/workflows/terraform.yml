@@ -26,20 +26,18 @@ permissions:
   id-token: write   # OIDC federation to AWS - no long-lived AWS keys stored in GitHub
   contents: read
   pull-requests: write
-  security-events: write   # required to call security-scan.yml, which uploads SARIF results
 
 env:
   TF_VERSION: "1.7.5"
   TF_WORKING_DIR: terraform/environments
 
 jobs:
-  # Static analysis / security scanning always runs first,
-  # and gates plan/apply - see security-scan.yml for the full suite.
-  security:
-    uses: ./.github/workflows/security-scan.yml
-
+  # Security scanning runs as its own workflow (security-scan.yml, triggered
+  # independently on every PR/push) rather than being called from here - it
+  # used to be called as a reusable workflow too, which made it run twice
+  # per terraform-touching PR. The gate now lives in branch protection
+  # (required status checks on dev/test) instead of an in-pipeline `needs`.
   determine-env:
-    needs: security
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}

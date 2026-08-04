@@ -1,14 +1,22 @@
+# Node 24: Active LTS (Node 22 is now Maintenance LTS). Alpine, not
+# slim: no native (compiled) dependencies in package.json, so alpine's
+# smaller footprint has no glibc-compatibility downside here.
 # --- build stage ---
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 
 # --- runtime stage ---
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# npm/npx/corepack are unused at runtime (only `node index.js` runs) -
+# removing them drops their bundled node_modules entirely, which is
+# where CVE findings kept turning up regardless of Node version.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=build /app /app
 USER appuser
 EXPOSE 8080

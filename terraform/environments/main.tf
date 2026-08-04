@@ -139,6 +139,76 @@ module "vault" {
 }
 
 ############################################
+# ECR repositories for the frontend/backend images.
+# CI (frontend-ci.yml / backend-ci.yml) references these
+# by a fixed name with no per-environment suffix - shared
+# across the dev/test workspaces, not one pair each - so
+# they're only created from the dev workspace to avoid a
+# "repository already exists" collision if the test
+# workspace is ever applied too.
+############################################
+resource "aws_kms_key" "ecr" {
+  count                   = local.environment == "dev" ? 1 : 0
+  description             = "KMS key for ${var.project_name} ECR repositories"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = local.common_tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableIAMUserPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      }
+    ]
+  })
+}
+
+#checkov:skip=CKV_AWS_51:mutable tags are required so CI can re-push a floating :latest tag alongside each commit-sha tag
+resource "aws_ecr_repository" "this" {
+  for_each = local.environment == "dev" ? toset(["frontend", "backend"]) : toset([])
+
+  name                 = "${var.project_name}-${each.key}"
+  image_tag_mutability = "MUTABLE" # CI re-pushes a floating :latest tag alongside each commit-sha tag
+
+  image_scanning_configuration {
+    scan_on_push = true # AWS-native scan, redundant with (not a replacement for) the Trivy gate in CI
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.ecr[0].arn
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_ecr_lifecycle_policy" "this" {
+  for_each   = aws_ecr_repository.this
+  repository = each.value.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images after 7 days"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 7
+        }
+        action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+############################################
 # GitHub PAT used by CI for GitOps commits -
 # stored in AWS Secrets Manager (per the request
 # to keep GitHub tokens there rather than in Vault).
