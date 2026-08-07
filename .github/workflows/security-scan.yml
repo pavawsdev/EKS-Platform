@@ -12,12 +12,11 @@ permissions:
 
 jobs:
   # Detects which parts of the repo changed so the terraform/helm-specific
-  # scanners below can skip themselves on PRs/pushes that don't touch that
-  # area (e.g. a pure frontend change) instead of re-scanning the whole repo
-  # every time. gitleaks/codeql/dependency-scan stay unconditional since
-  # they're not terraform/k8s-specific. A skipped job still satisfies
-  # branch protection's required status checks, so this doesn't weaken the
-  # merge gate on dev/main.
+  # scanners below can skip their actual scan steps on PRs/pushes that don't
+  # touch that area (e.g. a pure frontend change) instead of re-scanning the
+  # whole repo every time. gitleaks/codeql/dependency-scan stay unconditional
+  # since they're not terraform/k8s-specific. See the per-job comment on
+  # tfsec for why the gating is step-level, not job-level.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -46,30 +45,39 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---- Terraform static analysis ----
+  # needs.changes.outputs.terraform gates the individual scan/upload steps
+  # below, not the job itself - a job skipped at the job level (via job-
+  # level `if:`) reports conclusion "skipped", and GitHub's required-status-
+  # checks branch protection treats skipped != success, so the job would
+  # never satisfy the check and PRs that don't touch terraform/ would block
+  # forever. Skipping the steps instead leaves the job itself completing
+  # with "success" (0 steps ran, none failed).
   tfsec:
     needs: changes
-    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.terraform == 'true'
       - name: tfsec - Terraform security scan
+        if: needs.changes.outputs.terraform == 'true'
         uses: aquasecurity/tfsec-sarif-action@v0.1.4
         with:
           working_directory: terraform
           sarif_file: tfsec.sarif
       - name: Upload tfsec SARIF
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: needs.changes.outputs.terraform == 'true' && always()
         with:
           sarif_file: tfsec.sarif
 
   checkov:
     needs: changes
-    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.terraform == 'true'
       - name: Checkov - IaC misconfiguration scan
+        if: needs.changes.outputs.terraform == 'true'
         uses: bridgecrewio/checkov-action@master
         with:
           directory: terraform
@@ -102,7 +110,7 @@ jobs:
           soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: needs.changes.outputs.terraform == 'true' && always()
         with:
           sarif_file: checkov.sarif
 
@@ -149,11 +157,12 @@ jobs:
   # ---- Kubernetes / Helm manifest scanning ----
   kube-linter:
     needs: changes
-    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.helm == 'true'
       - name: KubeLinter - Helm chart best practices
+        if: needs.changes.outputs.helm == 'true'
         uses: stackrox/kube-linter-action@v1
         with:
           directory: helm
