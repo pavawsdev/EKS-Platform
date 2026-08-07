@@ -11,6 +11,28 @@ permissions:
   security-events: write
 
 jobs:
+  # Detects which parts of the repo changed so the terraform/helm-specific
+  # scanners below can skip themselves on PRs/pushes that don't touch that
+  # area (e.g. a pure frontend change) instead of re-scanning the whole repo
+  # every time. gitleaks/codeql/dependency-scan stay unconditional since
+  # they're not terraform/k8s-specific. A skipped job still satisfies
+  # branch protection's required status checks, so this doesn't weaken the
+  # merge gate on dev/main.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      helm: ${{ steps.filter.outputs.helm }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**'
+            helm:
+              - 'helm/**'
+
   # ---- Secret scanning ----
   gitleaks:
     runs-on: ubuntu-latest
@@ -25,6 +47,8 @@ jobs:
 
   # ---- Terraform static analysis ----
   tfsec:
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +64,8 @@ jobs:
           sarif_file: tfsec.sarif
 
   checkov:
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +148,8 @@ jobs:
 
   # ---- Kubernetes / Helm manifest scanning ----
   kube-linter:
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
