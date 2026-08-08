@@ -23,6 +23,14 @@ jobs:
       terraform: ${{ steps.filter.outputs.terraform }}
       helm: ${{ steps.filter.outputs.helm }}
     steps:
+      # paths-filter needs a real git history to diff against on `push`
+      # events (it only skips this and uses the GitHub API instead on
+      # `pull_request`) - without this checkout it fails with "not a git
+      # repository", which then cascades: tfsec/checkov/kube-linter all
+      # `needs: changes`, and a failed dependency skips them by default,
+      # reproducing the exact "skipped required check never satisfies
+      # branch protection" problem this workflow was fixed to avoid.
+      - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
