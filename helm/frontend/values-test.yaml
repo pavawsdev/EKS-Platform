@@ -1,8 +1,0 @@
-environment: test
-replicaCount: 2
-image:
-  tag: "initial"
-ingress:
-  host: test.example.internal
-tags:
-  environment: test

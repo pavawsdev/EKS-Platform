@@ -4,7 +4,7 @@ on:
   workflow_call:
   pull_request:
   push:
-    branches: [dev, test]
+    branches: [dev, main]
 
 permissions:
   contents: read

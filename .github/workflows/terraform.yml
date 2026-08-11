@@ -2,11 +2,11 @@ name: Terraform Infrastructure
 
 on:
   push:
-    branches: [dev, test]
+    branches: [dev, main]
     paths:
       - "terraform/**"
   pull_request:
-    branches: [dev, test]
+    branches: [dev, main]
     paths:
       - "terraform/**"
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
         description: "Environment to target"
         required: true
         type: choice
-        options: [dev, test]
+        options: [dev, prod]
       action:
         description: "Terraform action"
         required: true
@@ -36,7 +36,14 @@ jobs:
   # independently on every PR/push) rather than being called from here - it
   # used to be called as a reusable workflow too, which made it run twice
   # per terraform-touching PR. The gate now lives in branch protection
-  # (required status checks on dev/test) instead of an in-pipeline `needs`.
+  # (required status checks on dev/main) instead of an in-pipeline `needs`.
+  #
+  # Branch -> environment mapping: "prod" is intentionally not the name of
+  # a branch. main is the long-lived branch (dev -> main promotion, same as
+  # the rest of the repo's git flow); "prod" is just what that environment
+  # is called (workspace name, tfvars file, tags). See locals.git_branch in
+  # the Terraform config for the other half of this mapping (ArgoCD's
+  # targetRevision needs the actual branch name, not the environment name).
   determine-env:
     runs-on: ubuntu-latest
     outputs:
@@ -46,8 +53,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" == "test" ]; then
-            echo "environment=test" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" == "main" ]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
           else
             echo "environment=dev" >> "$GITHUB_OUTPUT"
           fi
@@ -120,7 +127,7 @@ jobs:
     needs: [determine-env, plan]
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
     runs-on: ubuntu-latest
-    # Attach required-reviewer rules to the "test" GitHub Environment if you
+    # Attach required-reviewer rules to the "prod" GitHub Environment if you
     # want a manual approval gate before infra changes land there.
     environment: ${{ needs.determine-env.outputs.environment }}
     defaults:
