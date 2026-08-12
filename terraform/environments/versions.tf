@@ -34,7 +34,7 @@ terraform {
 
   # NOTE: bucket/dynamodb table must be created once, out-of-band,
   # before first `terraform init` (see README "Bootstrap" section).
-  # Workspaces (dev/test) are separated automatically via
+  # Workspaces (dev/prod) are separated automatically via
   # workspace_key_prefix, so each gets its own state file:
   #   s3://<bucket>/env:/<workspace>/eks-platform/terraform.tfstate
   backend "s3" {

@@ -1,0 +1,8 @@
+environment: prod
+replicaCount: 2
+image:
+  tag: "initial"
+ingress:
+  host: prod.example.internal
+tags:
+  environment: prod

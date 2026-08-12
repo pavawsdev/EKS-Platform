@@ -3,7 +3,7 @@
 A production-style reference implementation for deploying a frontend + backend
 application onto AWS EKS using:
 
-- **Terraform** (module-based, one workspace per environment: `dev` / `test`)
+- **Terraform** (module-based, one workspace per environment: `dev` / `prod`)
 - **GitHub Actions** for CI/CD, with security scanning gating every deploy
 - **ArgoCD** for GitOps-based delivery
 - **Helm** for packaging the frontend and backend
@@ -17,12 +17,12 @@ application onto AWS EKS using:
 terraform/
   modules/            # vpc, oidc, eks, add-ons, alb, argocd, bastion, cognito, rds, vault
   environments/        # root config that wires modules together, one per workspace
-    tfvars/             # dev.tfvars, test.tfvars
+    tfvars/             # dev.tfvars, prod.tfvars
 apps/
   frontend/            # sample React app
   backend/             # sample Node/Express API
 helm/
-  frontend/            # Helm chart + values-{dev,test}.yaml
+  frontend/            # Helm chart + values-{dev,prod}.yaml
   backend/             # same, plus Vault Agent Injector annotations
 argocd/
   applications/        # one Application manifest per service per environment
@@ -34,15 +34,33 @@ argocd/
   backend-ci.yml
 ```
 
+## Branches and environments
+
+Two long-lived branches, `dev` and `main` — feature branches merge into
+`dev`, and `dev` periodically promotes into `main` via PR. Branch and
+environment names intentionally diverge for prod: there's no branch
+literally called `prod`, `main` *is* the prod branch (see
+`locals.git_branch` in `terraform/environments/locals.tf`, which is the one
+place that maps `main` -> the `prod` environment name for ArgoCD's
+`targetRevision`). Everywhere else — workspace name, tfvars file, resource
+tags — just uses `dev` / `prod` as the environment name.
+
+**Current state**: `dev` is the only environment actually deployed to.
+Pushing to `main` runs `terraform plan` for `prod` only (read-only, no
+`apply`) so the plan is visible before anything real is built — `frontend-ci.yml`
+/ `backend-ci.yml` (image build/push/GitOps-commit) are intentionally not
+wired to `main` yet. That gets added once the `dev` pipeline below is
+confirmed stable.
+
 ## How it fits together
 
-1. A developer pushes code to `dev` or `test`.
+1. A developer opens a PR from a feature branch into `dev`.
 2. GitHub Actions runs tests, then the **security gate** (SAST, secret scanning,
    dependency/image scanning) — a failed scan blocks the image from ever
    reaching ECR.
-3. On success, the image is pushed to ECR. A follow-up job fetches a GitHub
-   push token from **AWS Secrets Manager** (via the same OIDC-federated AWS
-   role, no static AWS keys) and uses it to commit the new image tag into
+3. On merge to `dev`, the image is pushed to ECR. A follow-up job fetches a
+   GitHub push token from **AWS Secrets Manager** (via the same OIDC-federated
+   AWS role, no static AWS keys) and uses it to commit the new image tag into
    `helm/<service>/values-<env>.yaml`.
 4. ArgoCD (installed by the `argocd` Terraform module, bootstrapped as an
    "app-of-apps" watching `argocd/applications/`) detects the Git change and
@@ -52,9 +70,9 @@ argocd/
    at startup — nothing secret ever sits in a Helm value, ConfigMap, or plain
    Kubernetes Secret.
 6. The Terraform pipeline is entirely separate: infrastructure changes go
-   through `terraform plan` (commented on the PR) and a manual-approval
-   `apply`/`destroy` via `workflow_dispatch`, scoped per environment using
-   **Terraform workspaces**.
+   through `terraform plan` (commented on the PR, and on every push to `dev`
+   or `main`) and a manual-approval `apply`/`destroy` via `workflow_dispatch`,
+   scoped per environment using **Terraform workspaces**.
 
 ## Secrets model
 
@@ -84,7 +102,7 @@ initial recovery keys). The flow:
 
 ```bash
 cd terraform/environments
-terraform workspace select dev   # or test
+terraform workspace select dev   # or prod
 
 # Phase 1: deploy Vault only (KV mount / auth backend / policies are
 # gated behind configure_vault so they aren't attempted yet)
@@ -135,7 +153,7 @@ Also create, in GitHub:
   the *value* written into the `eksplat-<env>-github-token` AWS Secrets
   Manager entry (so Terraform can create the secret container and CI can
   populate + later read it).
-- GitHub Environments named `dev` and `test` (and `<env>-plan`,
+- GitHub Environments named `dev` and `prod` (and `<env>-plan`,
   `<env>-destroy`) so you can attach required-reviewer approval rules if
   you want manual gates on apply.
 
@@ -150,10 +168,10 @@ terraform workspace select dev
 terraform plan  -var-file=tfvars/dev.tfvars
 terraform apply -var-file=tfvars/dev.tfvars
 
-# same pattern for test:
-terraform workspace new test
-terraform workspace select test
-terraform apply -var-file=tfvars/test.tfvars
+# same pattern for prod:
+terraform workspace new prod
+terraform workspace select prod
+terraform apply -var-file=tfvars/prod.tfvars
 ```
 
 Every resource is tagged with `Environment = terraform.workspace` plus
@@ -164,19 +182,20 @@ per workspace in the AWS console/Cost Explorer.
 `environment_config` in `variables.tf` is keyed by workspace name and
 drives the real differences between environments:
 
-| | dev | test |
+| | dev | prod |
 |---|---|---|
 | NAT gateways | 1 shared | 1 shared |
 | EKS endpoint | public | public |
 | Node capacity | SPOT | SPOT |
 | RDS Multi-AZ | no | no |
 | RDS deletion protection | no | no |
-| WAF | enabled | enabled |
+| WAF | disabled | enabled |
 
-Both environments are intentionally similar here since there's no `prod` —
-tighten `test` further (Multi-AZ, deletion protection, dedicated NAT per AZ,
-private-only EKS endpoint) if you want it to double as a pre-production
-gate before adding a third workspace later.
+`prod` here is a name, not yet a hardening level — the two environments are
+still deliberately similar in topology/sizing for this demo. Before treating
+`prod` as an actual production target, tighten it further (Multi-AZ, RDS
+deletion protection, dedicated NAT per AZ, private-only EKS endpoint,
+non-SPOT nodes).
 
 ## Connecting to the cluster
 
