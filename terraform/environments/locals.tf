@@ -25,3 +25,4 @@ locals {
 
   env_config = var.environment_config[local.environment]
 }
+# verification-only: confirms determine-env resolves environment=prod for a PR targeting main
