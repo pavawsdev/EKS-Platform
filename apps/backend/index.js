@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const express = require("express");
 const helmet = require("helmet");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 const { SQSClient, SendMessageCommand, GetQueueAttributesCommand } = require("@aws-sdk/client-sqs");
 
@@ -11,6 +12,14 @@ const port = process.env.PORT || 8080;
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
 // DB credentials are injected via a Kubernetes secret (synced from
 // AWS Secrets Manager, see rds module output), never hardcoded here.
