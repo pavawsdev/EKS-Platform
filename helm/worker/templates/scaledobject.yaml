@@ -1,0 +1,33 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "worker.fullname" . }}
+  labels:
+    {{- include "worker.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "worker.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+    # Scales on queue depth - the main driver, reacting to bursts of
+    # POST /api/jobs from Postman.
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: {{ include "worker.fullname" . }}
+      metadata:
+        queueURL: {{ .Values.env.SQS_QUEUE_URL | quote }}
+        queueLength: {{ .Values.keda.queueLength | quote }}
+        awsRegion: {{ .Values.keda.awsRegion | quote }}
+    # Scales up during a fixed time window regardless of queue depth -
+    # independent from the trigger above, demoing schedule-based scaling.
+    - type: cron
+      metadata:
+        timezone: {{ .Values.keda.cronTimezone | quote }}
+        start: {{ .Values.keda.cronStart | quote }}
+        end: {{ .Values.keda.cronEnd | quote }}
+        desiredReplicas: {{ .Values.keda.cronDesiredReplicas | quote }}
+{{- end }}

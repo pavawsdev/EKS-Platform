@@ -55,11 +55,13 @@ module "eks" {
 module "oidc" {
   source = "../modules/oidc"
 
-  name_prefix       = local.name_prefix
-  cluster_name      = local.cluster_name
-  oidc_provider_url = module.eks.oidc_provider_url
-  oidc_provider_arn = module.eks.oidc_provider_arn
-  tags              = local.common_tags
+  name_prefix        = local.name_prefix
+  cluster_name       = local.cluster_name
+  environment        = local.environment
+  oidc_provider_url  = module.eks.oidc_provider_url
+  oidc_provider_arn  = module.eks.oidc_provider_arn
+  sqs_jobs_queue_arn = aws_sqs_queue.jobs.arn
+  tags               = local.common_tags
 }
 
 ############################################
@@ -92,6 +94,7 @@ module "add_ons" {
   external_dns_role_arn       = module.oidc.external_dns_role_arn
   enable_external_dns         = local.env_config.enable_external_dns
   hosted_zone_id              = local.env_config.hosted_zone_id
+  keda_operator_role_arn      = module.oidc.keda_operator_role_arn
   tags                        = local.common_tags
 
   depends_on = [module.eks]
@@ -133,6 +136,7 @@ module "vault" {
   kubernetes_ca_cert            = base64decode(module.eks.cluster_ca_data)
   backend_service_account_name  = "backend"
   frontend_service_account_name = "frontend"
+  worker_service_account_name   = "worker"
   tags                          = local.common_tags
 
   depends_on = [module.add_ons]
@@ -328,4 +332,32 @@ module "rds" {
   tags                       = local.common_tags
 
   depends_on = [module.vault]
+}
+
+############################################
+# SQS - queue-driven worker jobs. One queue per
+# environment/workspace (unlike the shared ECR
+# repos above, jobs must never cross dev/prod),
+# so this follows the plain per-workspace pattern
+# used by RDS/bastion/cognito, not the dev-only gate.
+############################################
+resource "aws_sqs_queue" "jobs_dlq" {
+  name                      = "${local.name_prefix}-jobs-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  sqs_managed_sse_enabled   = true
+  tags                      = local.common_tags
+}
+
+resource "aws_sqs_queue" "jobs" {
+  name                       = "${local.name_prefix}-jobs"
+  visibility_timeout_seconds = 60     # comfortably above worker.js's simulated 1-3s processing time
+  message_retention_seconds  = 345600 # 4 days
+  sqs_managed_sse_enabled    = true
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.jobs_dlq.arn
+    maxReceiveCount     = 5
+  })
+
+  tags = local.common_tags
 }

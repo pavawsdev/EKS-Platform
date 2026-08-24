@@ -136,12 +136,16 @@ jobs:
       - name: Bump image tag in Helm values (GitOps trigger for ArgoCD)
         run: |
           sed -i "s/^  tag: .*/  tag: \"${{ needs.build-and-push.outputs.image_tag }}\"/" helm/backend/values-${{ steps.env.outputs.name }}.yaml
+          # helm/worker shares the same image/ECR repo as backend (only the
+          # container command differs) - without this, worker/cron would
+          # keep running a stale image after every backend push.
+          sed -i "s/^  tag: .*/  tag: \"${{ needs.build-and-push.outputs.image_tag }}\"/" helm/worker/values-${{ steps.env.outputs.name }}.yaml
 
       - name: Commit updated image tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ steps.gh-token.outputs.token }}@github.com/${{ github.repository }}.git"
-          git add helm/backend/values-*.yaml
+          git add helm/backend/values-*.yaml helm/worker/values-*.yaml
           git commit -m "ci: bump backend image to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]" || echo "no changes"
           git push

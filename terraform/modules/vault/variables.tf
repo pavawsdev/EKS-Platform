@@ -60,6 +60,11 @@ variable "frontend_service_account_name" {
   default = "frontend"
 }
 
+variable "worker_service_account_name" {
+  type    = string
+  default = "worker"
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

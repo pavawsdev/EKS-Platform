@@ -22,6 +22,10 @@ output "bastion_public_ip" {
   value = module.bastion.bastion_public_ip
 }
 
+output "bastion_instance_id" {
+  value = module.bastion.bastion_instance_id
+}
+
 output "argocd_server_url" {
   value = module.argocd.argocd_server_url
 }

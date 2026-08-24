@@ -1,0 +1,28 @@
+environment: dev
+image:
+  tag: "initial"
+serviceAccount:
+  irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-dev-worker-irsa"
+env:
+  AWS_REGION: "ap-south-1"
+  SQS_QUEUE_URL: "https://sqs.ap-south-1.amazonaws.com/887047732645/eksplat-dev-jobs"
+vault:
+  enabled: true
+  role: "worker-dev"
+  addr: "https://vault.dev.example.internal"
+  dbSecretPath: "secret/data/dev/db"
+keda:
+  awsRegion: "ap-south-1"
+  # Demo "business hours" window - to see the cron trigger fire without
+  # waiting for the real window, temporarily override cronStart/cronEnd
+  # via `helm upgrade --set` to a near-future time (see README testing
+  # flow) and watch pods scale with an empty queue.
+  cronTimezone: "Asia/Kolkata"
+  cronStart: "0 9 * * *"
+  cronEnd: "0 18 * * *"
+cronjob:
+  # Every 5 minutes - frequent enough to see several real runs over the
+  # 3-day exercise without generating much noise.
+  schedule: "*/5 * * * *"
+tags:
+  environment: dev

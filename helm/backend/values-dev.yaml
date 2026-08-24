@@ -4,10 +4,18 @@ autoscaling:
   enabled: false
 image:
   tag: "initial"
+serviceAccount:
+  irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-dev-backend-irsa"
+env:
+  AWS_REGION: "ap-south-1"
+  SQS_QUEUE_URL: "https://sqs.ap-south-1.amazonaws.com/887047732645/eksplat-dev-jobs"
 vault:
   enabled: true
   role: "backend-dev"
   addr: "https://vault.dev.example.internal"
   dbSecretPath: "secret/data/dev/db"
+ingress:
+  enabled: true
+  host: "backend.dev.example.internal"
 tags:
   environment: dev
