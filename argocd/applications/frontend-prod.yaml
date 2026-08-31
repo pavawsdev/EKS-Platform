@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: frontend-test
+  name: frontend-prod
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -9,15 +9,15 @@ spec:
   project: eksplat
   source:
     repoURL: https://github.com/pavawsdev/EKS-Platform.git
-    targetRevision: test
+    targetRevision: main
     path: helm/frontend
     helm:
       valueFiles:
         - values.yaml
-        - values-test.yaml
+        - values-prod.yaml
   destination:
     server: https://kubernetes.default.svc
-    namespace: frontend-test
+    namespace: frontend-prod
   syncPolicy:
     automated:
       prune: true

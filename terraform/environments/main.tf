@@ -105,7 +105,7 @@ module "argocd" {
 
   environment     = local.environment
   repo_url        = var.repo_url
-  target_revision = local.environment # "dev" or "test" branch, 1:1 with the workspace
+  target_revision = local.git_branch # "dev" or "main" - the branch, not the environment name
   domain_name     = var.domain_name
   tags            = local.common_tags
 
@@ -142,9 +142,9 @@ module "vault" {
 # ECR repositories for the frontend/backend images.
 # CI (frontend-ci.yml / backend-ci.yml) references these
 # by a fixed name with no per-environment suffix - shared
-# across the dev/test workspaces, not one pair each - so
+# across the dev/prod workspaces, not one pair each - so
 # they're only created from the dev workspace to avoid a
-# "repository already exists" collision if the test
+# "repository already exists" collision if the prod
 # workspace is ever applied too.
 ############################################
 resource "aws_kms_key" "ecr" {

@@ -2,13 +2,13 @@ project_name = "eksplat"
 aws_region   = "ap-south-1"
 owner        = "platform-team"
 cost_center  = "engineering"
-domain_name  = "test.example.internal"
+domain_name  = "prod.example.internal"
 repo_url     = "https://github.com/pavawsdev/EKS-Platform.git"
 
 allowed_ssh_cidrs = ["203.0.113.0/24"] # replace with your office/VPN CIDR
 
 environment_config = {
-  test = {
+  prod = {
     vpc_cidr               = "10.20.0.0/16"
     azs                    = ["ap-south-1a", "ap-south-1b"]
     public_subnet_cidrs    = ["10.20.0.0/24", "10.20.1.0/24"]

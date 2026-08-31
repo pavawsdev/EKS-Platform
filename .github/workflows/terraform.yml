@@ -2,11 +2,11 @@ name: Terraform Infrastructure
 
 on:
   push:
-    branches: [dev, test]
+    branches: [dev, main]
     paths:
       - "terraform/**"
   pull_request:
-    branches: [dev, test]
+    branches: [dev, main]
     paths:
       - "terraform/**"
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
         description: "Environment to target"
         required: true
         type: choice
-        options: [dev, test]
+        options: [dev, prod]
       action:
         description: "Terraform action"
         required: true
@@ -36,7 +36,14 @@ jobs:
   # independently on every PR/push) rather than being called from here - it
   # used to be called as a reusable workflow too, which made it run twice
   # per terraform-touching PR. The gate now lives in branch protection
-  # (required status checks on dev/test) instead of an in-pipeline `needs`.
+  # (required status checks on dev/main) instead of an in-pipeline `needs`.
+  #
+  # Branch -> environment mapping: "prod" is intentionally not the name of
+  # a branch. main is the long-lived branch (dev -> main promotion, same as
+  # the rest of the repo's git flow); "prod" is just what that environment
+  # is called (workspace name, tfvars file, tags). See locals.git_branch in
+  # the Terraform config for the other half of this mapping (ArgoCD's
+  # targetRevision needs the actual branch name, not the environment name).
   determine-env:
     runs-on: ubuntu-latest
     outputs:
@@ -45,15 +52,46 @@ jobs:
       - id: set-env
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" == "test" ]; then
-            echo "environment=test" >> "$GITHUB_OUTPUT"
+            ENVIRONMENT="${{ inputs.environment }}"
           else
-            echo "environment=dev" >> "$GITHUB_OUTPUT"
+            # github.ref_name resolves to "<pr_number>/merge" on pull_request
+            # events, never the actual branch name - github.base_ref is the
+            # field that holds the PR's target branch. Everywhere else
+            # (push), ref_name is the real branch name.
+            if [ "${{ github.event_name }}" == "pull_request" ]; then
+              REF="${{ github.base_ref }}"
+            else
+              REF="${{ github.ref_name }}"
+            fi
+
+            if [ "$REF" == "main" ]; then
+              ENVIRONMENT="prod"
+            else
+              ENVIRONMENT="dev"
+            fi
           fi
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+
+  # Fails fast with a clear message if the resolved environment has no
+  # matching tfvars file, instead of a confusing error partway through
+  # `terraform plan`/`apply`, or worse, "Select/Create Workspace" silently
+  # creating a new empty workspace that has no tfvars backing it at all.
+  validate-env:
+    needs: determine-env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tfvars file exists for this environment
+        run: |
+          FILE="${{ env.TF_WORKING_DIR }}/tfvars/${{ needs.determine-env.outputs.environment }}.tfvars"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::No tfvars file for environment '${{ needs.determine-env.outputs.environment }}' (expected $FILE)"
+            exit 1
+          fi
+          echo "Found $FILE"
 
   plan:
-    needs: determine-env
+    needs: [determine-env, validate-env]
     runs-on: ubuntu-latest
     environment: ${{ needs.determine-env.outputs.environment }}-plan
     defaults:
@@ -87,6 +125,15 @@ jobs:
           terraform workspace select ${{ needs.determine-env.outputs.environment }} \
           || terraform workspace new ${{ needs.determine-env.outputs.environment }}
 
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ needs.determine-env.outputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
       - name: Terraform Validate
         run: terraform validate
 
@@ -117,11 +164,12 @@ jobs:
           path: ${{ env.TF_WORKING_DIR }}/tfplan
 
   apply:
-    needs: [determine-env, plan]
+    needs: [determine-env, validate-env, plan]
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
     runs-on: ubuntu-latest
-    # Attach required-reviewer rules to the "test" GitHub Environment if you
-    # want a manual approval gate before infra changes land there.
+    # The "prod" GitHub Environment has a required-reviewer rule attached
+    # (repo Settings > Environments) - "dev" doesn't, so dev applies run
+    # straight through once dispatched, prod applies wait for approval.
     environment: ${{ needs.determine-env.outputs.environment }}
     defaults:
       run:
@@ -149,6 +197,15 @@ jobs:
       - name: Select Workspace
         run: terraform workspace select ${{ needs.determine-env.outputs.environment }}
 
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ needs.determine-env.outputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ needs.determine-env.outputs.environment }}
@@ -158,7 +215,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
   destroy:
-    needs: determine-env
+    needs: [determine-env, validate-env]
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
     runs-on: ubuntu-latest
     environment: ${{ needs.determine-env.outputs.environment }}-destroy
@@ -186,6 +243,16 @@ jobs:
 
       - run: terraform init
       - run: terraform workspace select ${{ needs.determine-env.outputs.environment }}
+
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ needs.determine-env.outputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
       - run: |
           terraform destroy -auto-approve \
             -var-file="tfvars/${{ needs.determine-env.outputs.environment }}.tfvars"

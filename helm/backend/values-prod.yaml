@@ -1,0 +1,14 @@
+environment: prod
+replicaCount: 2
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4
+image:
+  tag: "initial"
+vault:
+  enabled: true
+  role: "backend-prod"
+  addr: "https://vault.prod.example.internal"
+  dbSecretPath: "secret/data/prod/db"
+tags:
+  environment: prod
