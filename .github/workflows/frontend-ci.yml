@@ -109,7 +109,15 @@ jobs:
 
   update-manifest:
     needs: build-and-push
-    if: github.event_name == 'push'
+    # workflow_dispatch too, not just push - lets this GitOps step be
+    # re-run manually to recover from a failed/rejected push (e.g. a
+    # concurrent-push race with another workflow) without needing to
+    # contrive a new commit just to retrigger it. Fine for dev's fast/
+    # ungated iteration model - if this pipeline is ever wired to main/
+    # prod, add an Environment-based approval gate first (same treatment
+    # as terraform.yml's prod apply/destroy), since this would otherwise
+    # let anyone who can dispatch the workflow deploy prod with no review.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -157,4 +165,14 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ steps.gh-token.outputs.token }}@github.com/${{ github.repository }}.git"
           git add helm/frontend/values-*.yaml
           git commit -m "ci: bump frontend image to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]" || echo "no changes"
-          git push
+          # A concurrent GitOps push from another workflow run (e.g. backend-ci.yml
+          # triggered by the same commit) can land first and make this push a
+          # non-fast-forward rejection - rebase onto the new tip and retry rather
+          # than failing outright.
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push rejected (attempt $i/5) - fetching and rebasing before retry"
+            git fetch origin "${{ github.ref_name }}"
+            git rebase "origin/${{ github.ref_name }}"
+            sleep $((RANDOM % 5 + 1))
+          done
