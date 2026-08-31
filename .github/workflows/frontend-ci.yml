@@ -115,7 +115,14 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # persist-credentials: false - otherwise checkout leaves a git
+      # credential header authenticated as the built-in GITHUB_TOKEN
+      # (contents: read only, per this job's permissions above), which
+      # takes precedence over the GitOps PAT embedded in the remote URL
+      # below and makes `git push` fail with 403 instead of using the PAT.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
