@@ -1,3 +1,6 @@
+// See ../Dockerfile - both build stages run `apk upgrade` so OS package
+// CVEs (e.g. openssl/libcrypto3/libssl3) get patched at build time
+// regardless of how stale the base image tag's last-published snapshot is.
 const crypto = require("crypto");
 const express = require("express");
 const helmet = require("helmet");
