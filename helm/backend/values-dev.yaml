@@ -3,7 +3,7 @@ replicaCount: 1
 autoscaling:
   enabled: false
 image:
-  tag: "initial"
+  tag: "4087e463"
 serviceAccount:
   irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-dev-backend-irsa"
 env:
