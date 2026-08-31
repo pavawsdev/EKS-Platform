@@ -13,3 +13,15 @@ output "ebs_csi_role_arn" {
 output "external_dns_role_arn" {
   value = aws_iam_role.external_dns.arn
 }
+
+output "backend_role_arn" {
+  value = aws_iam_role.backend.arn
+}
+
+output "worker_role_arn" {
+  value = aws_iam_role.worker.arn
+}
+
+output "keda_operator_role_arn" {
+  value = aws_iam_role.keda_operator.arn
+}

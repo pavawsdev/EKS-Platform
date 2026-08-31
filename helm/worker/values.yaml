@@ -1,0 +1,67 @@
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/eksplat-backend # same image/ECR repo as helm/backend - only the container command differs
+  tag: "initial" # CI overwrites this with a commit-sha tag on every build; never left as "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  targetPort: 8081 # worker.js's bare health server, not an app port - no Service/Ingress routes to it
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: worker
+  irsaRoleArn: "" # set per-env - grants sqs:ReceiveMessage/DeleteMessage/GetQueueAttributes (see values-<env>.yaml)
+
+# Non-secret config only - same convention as helm/backend.
+env:
+  AWS_REGION: "" # set per-env
+  SQS_QUEUE_URL: "" # set per-env
+
+vault:
+  enabled: true
+  role: "" # set per-env, e.g. worker-dev (see values-<env>.yaml)
+  addr: ""
+  dbSecretPath: "" # reuses the same DB secret backend already reads, e.g. secret/data/dev/db
+
+# minReplicaCount: 0 is safe here specifically because the triggers below
+# are external (queue depth) / time-based (cron), not CPU - this is not
+# the same "scale to zero" question a CPU-based HPA can't answer.
+keda:
+  enabled: true
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  pollingInterval: 15 # seconds between KEDA checking the queue
+  cooldownPeriod: 60 # seconds to wait after the last trigger fires before scaling back down
+  queueLength: "5" # target: KEDA aims for ~1 replica per 5 in-flight messages
+  awsRegion: "" # set per-env
+  cronTimezone: "" # set per-env
+  cronStart: "" # set per-env, e.g. "0 9 * * *"
+  cronEnd: "" # set per-env, e.g. "0 10 * * *"
+  cronDesiredReplicas: "2"
+
+cronjob:
+  enabled: true
+  schedule: "" # set per-env, e.g. "*/5 * * * *"
+
+environment: dev
+
+tags:
+  project: eksplat
+  component: worker

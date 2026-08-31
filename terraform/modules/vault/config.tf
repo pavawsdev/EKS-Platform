@@ -69,3 +69,16 @@ resource "vault_kubernetes_auth_backend_role" "frontend" {
   token_policies                   = [vault_policy.app_read[0].name]
   token_ttl                        = 3600
 }
+
+# Bound to a separate namespace/SA from "backend" above since the worker
+# (and the CronJob, which reuses this same role) run there, not in
+# backend-<env> - reuses the same app_read policy, no new policy needed.
+resource "vault_kubernetes_auth_backend_role" "worker" {
+  count                            = var.configure_vault ? 1 : 0
+  backend                          = vault_auth_backend.kubernetes[0].path
+  role_name                        = "worker-${var.environment}"
+  bound_service_account_names      = [var.worker_service_account_name]
+  bound_service_account_namespaces = ["worker-${var.environment}"]
+  token_policies                   = [vault_policy.app_read[0].name]
+  token_ttl                        = 3600
+}

@@ -37,16 +37,19 @@ securityContext:
 serviceAccount:
   create: true
   name: backend
+  irsaRoleArn: "" # set per-env - grants sqs:SendMessage on the jobs queue (see values-<env>.yaml)
 
 # Non-secret config only. DB credentials, the Cognito client secret, and
 # any API tokens come from Vault via the agent injector below - nothing
 # secret ever sits in a Helm value, a ConfigMap, or a plain k8s Secret.
 env:
   DB_NAME: "appdb"
+  AWS_REGION: "" # set per-env - IRSA doesn't auto-inject region
+  SQS_QUEUE_URL: "" # set per-env (see values-<env>.yaml)
 
 vault:
   enabled: true
-  role: "" # set per-env, e.g. backend-dev / backend-test (see values-<env>.yaml)
+  role: "" # set per-env, e.g. backend-dev / backend-prod (see values-<env>.yaml)
   addr: ""  # set per-env, e.g. https://vault.dev.example.internal
   dbSecretPath: "" # e.g. secret/data/dev/db
 

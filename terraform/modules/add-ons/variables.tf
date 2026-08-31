@@ -32,6 +32,10 @@ variable "hosted_zone_id" {
   default = ""
 }
 
+variable "keda_operator_role_arn" {
+  type = string
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
