@@ -122,10 +122,10 @@ jobs:
     # Shared with backend-ci.yml's update-manifest job on purpose: a
     # single commit touching both apps/frontend/** and apps/backend/**
     # triggers both workflows at once, and both jobs' GitOps push target
-    # the same branch. Same group name serializes them instead of letting
-    # them race - the second job's checkout (which only happens once its
-    # turn starts) then naturally includes whatever the first already
-    # pushed, so there's nothing to retry.
+    # the same branch. Same group name stops the two jobs' git commands
+    # from running interleaved/simultaneously - paired with the explicit
+    # checkout ref below, which stops the second job (once it's their
+    # turn) from working off a stale pre-queue snapshot.
     concurrency:
       group: gitops-manifest-${{ github.ref_name }}
       cancel-in-progress: false
@@ -133,6 +133,18 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # ref: explicit branch name, not the default (github.sha, resolved
+      # once at dispatch time). Without this, a job that waits behind the
+      # concurrency group above still checks out a stale snapshot from
+      # before it was queued - the wait alone prevents the two jobs' git
+      # commands from interleaving, but not this staleness, so the second
+      # job's push was still rejected as non-fast-forward even though it
+      # ran strictly after the first one finished (confirmed via job
+      # timestamps: zero overlap, yet still rejected). ref: <branch name>
+      # re-resolves to the branch's actual current tip at checkout time,
+      # not a value cached back when the workflow was originally
+      # dispatched.
+      #
       # persist-credentials: false - otherwise checkout leaves a git
       # credential header authenticated as the built-in GITHUB_TOKEN
       # (contents: read only, per this job's permissions above), which
@@ -140,6 +152,7 @@ jobs:
       # below and makes `git push` fail with 403 instead of using the PAT.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           persist-credentials: false
 
       - name: Configure AWS credentials (OIDC)
