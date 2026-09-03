@@ -109,8 +109,26 @@ jobs:
 
   update-manifest:
     needs: build-and-push
-    if: github.event_name == 'push'
+    # workflow_dispatch too, not just push - lets this GitOps step be
+    # re-run manually to recover from a failed/rejected push (e.g. a
+    # concurrent-push race with another workflow) without needing to
+    # contrive a new commit just to retrigger it. Fine for dev's fast/
+    # ungated iteration model - if this pipeline is ever wired to main/
+    # prod, add an Environment-based approval gate first (same treatment
+    # as terraform.yml's prod apply/destroy), since this would otherwise
+    # let anyone who can dispatch the workflow deploy prod with no review.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Shared with backend-ci.yml's update-manifest job on purpose: a
+    # single commit touching both apps/frontend/** and apps/backend/**
+    # triggers both workflows at once, and both jobs' GitOps push target
+    # the same branch. Same group name serializes them instead of letting
+    # them race - the second job's checkout (which only happens once its
+    # turn starts) then naturally includes whatever the first already
+    # pushed, so there's nothing to retry.
+    concurrency:
+      group: gitops-manifest-${{ github.ref_name }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
