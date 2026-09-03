@@ -113,6 +113,16 @@ jobs:
     # let anyone who can dispatch the workflow deploy prod with no review.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Shared with frontend-ci.yml's update-manifest job on purpose: a
+    # single commit touching both apps/frontend/** and apps/backend/**
+    # triggers both workflows at once, and both jobs' GitOps push target
+    # the same branch. Same group name serializes them instead of letting
+    # them race - the second job's checkout (which only happens once its
+    # turn starts) then naturally includes whatever the first already
+    # pushed, so there's nothing to retry.
+    concurrency:
+      group: gitops-manifest-${{ github.ref_name }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
@@ -163,14 +173,4 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ steps.gh-token.outputs.token }}@github.com/${{ github.repository }}.git"
           git add helm/backend/values-*.yaml helm/worker/values-*.yaml
           git commit -m "ci: bump backend image to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]" || echo "no changes"
-          # A concurrent GitOps push from another workflow run (e.g. frontend-ci.yml
-          # triggered by the same commit) can land first and make this push a
-          # non-fast-forward rejection - rebase onto the new tip and retry rather
-          # than failing outright.
-          for i in 1 2 3 4 5; do
-            git push && break
-            echo "Push rejected (attempt $i/5) - fetching and rebasing before retry"
-            git fetch origin "${{ github.ref_name }}"
-            git rebase "origin/${{ github.ref_name }}"
-            sleep $((RANDOM % 5 + 1))
-          done
+          git push
