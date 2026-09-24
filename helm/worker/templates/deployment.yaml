@@ -13,8 +13,9 @@ spec:
     metadata:
       labels:
         {{- include "worker.selectorLabels" . | nindent 8 }}
-      {{- if .Values.vault.enabled }}
+      {{- if or .Values.vault.enabled .Values.observability.enabled }}
       annotations:
+        {{- if .Values.vault.enabled }}
         vault.hashicorp.com/agent-inject: "true"
         vault.hashicorp.com/role: {{ .Values.vault.role | quote }}
         vault.hashicorp.com/agent-inject-secret-db: {{ .Values.vault.dbSecretPath | quote }}
@@ -25,6 +26,12 @@ spec:
           export DB_USER="{{ .Data.data.username }}"
           export DB_PASSWORD="{{ .Data.data.password }}"
           {{- end }}`}}
+        {{- end }}
+        {{- if .Values.observability.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.targetPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}

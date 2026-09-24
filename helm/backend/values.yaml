@@ -46,12 +46,16 @@ env:
   DB_NAME: "appdb"
   AWS_REGION: "" # set per-env - IRSA doesn't auto-inject region
   SQS_QUEUE_URL: "" # set per-env (see values-<env>.yaml)
+  AWS_XRAY_DAEMON_ADDRESS: "" # e.g. adot-collector.adot-collector.svc.cluster.local:2000 - set per-env only once observability.enabled
 
 vault:
   enabled: true
   role: "" # set per-env, e.g. backend-dev / backend-prod (see values-<env>.yaml)
   addr: ""  # set per-env, e.g. https://vault.dev.example.internal
   dbSecretPath: "" # e.g. secret/data/dev/db
+
+observability:
+  enabled: false # flip once enable_observability=true has been applied and the ADOT collector Service exists
 
 ingress:
   enabled: false

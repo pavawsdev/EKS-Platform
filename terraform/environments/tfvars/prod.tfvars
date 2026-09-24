@@ -31,9 +31,10 @@ environment_config = {
     rds_deletion_protection     = false
     rds_backup_retention_period = 5
 
-    enable_external_dns = false
-    hosted_zone_id      = ""
-    create_acm_cert     = false
-    enable_waf          = true
+    enable_external_dns  = false
+    hosted_zone_id       = ""
+    create_acm_cert      = false
+    enable_waf           = true
+    enable_observability = false # AMP + Managed Grafana + Container Insights + X-Ray all bill on usage - see README "Observability"; not applied yet
   }
 }

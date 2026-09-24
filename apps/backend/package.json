@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.699.0",
+    "@prometheus-io/client": "^0.16.1",
+    "aws-xray-sdk-core": "^3.10.2",
+    "aws-xray-sdk-express": "^3.10.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.6.2",

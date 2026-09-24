@@ -1,6 +1,23 @@
 const http = require("http");
 const { Pool } = require("pg");
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require("@aws-sdk/client-sqs");
+const AWSXRay = require("aws-xray-sdk-core");
+const client = require("@prometheus-io/client");
+
+// Same daemon-address pattern as index.js - see that file's comment.
+if (process.env.AWS_XRAY_DAEMON_ADDRESS) {
+  AWSXRay.setDaemonAddress(process.env.AWS_XRAY_DAEMON_ADDRESS);
+}
+
+client.collectDefaultMetrics();
+const jobsProcessedTotal = new client.Counter({
+  name: "jobs_processed_total",
+  help: "Total jobs successfully processed",
+});
+const jobsFailedTotal = new client.Counter({
+  name: "jobs_failed_total",
+  help: "Total jobs that threw while processing",
+});
 
 // Same DB connection pattern as index.js - DB credentials are injected via
 // a Kubernetes secret (synced from AWS Secrets Manager), never hardcoded.
@@ -32,26 +49,47 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// No Express here, so tracing is manual rather than middleware-driven:
+// open a segment, run the work inside the X-Ray CLS namespace (so any
+// downstream instrumented call - e.g. the pg query - can attach as a
+// subsegment), close it in a finally. Less-traveled code path than
+// index.js's Express middleware - worth a real smoke test once ever
+// deployed with observability.enabled.
 async function processMessage(message) {
   const body = JSON.parse(message.Body);
-  console.log(`Processing job ${body.id}`);
 
-  // Simulated work - deliberately slow enough (1-3s) to make KEDA's
-  // scale-up visible when a burst of jobs lands at once.
-  await sleep(1000 + Math.random() * 2000);
+  return AWSXRay.getNamespace().runAndReturn(async () => {
+    const segment = new AWSXRay.Segment("eksplat-worker");
+    AWSXRay.setSegment(segment);
 
-  await pool.query("UPDATE job_runs SET status = 'done', processed_at = now() WHERE id = $1", [
-    body.id,
-  ]);
+    try {
+      console.log(`Processing job ${body.id}`);
 
-  await sqs.send(
-    new DeleteMessageCommand({
-      QueueUrl: queueUrl,
-      ReceiptHandle: message.ReceiptHandle,
-    })
-  );
+      // Simulated work - deliberately slow enough (1-3s) to make KEDA's
+      // scale-up visible when a burst of jobs lands at once.
+      await sleep(1000 + Math.random() * 2000);
 
-  console.log(`Completed job ${body.id}`);
+      await pool.query("UPDATE job_runs SET status = 'done', processed_at = now() WHERE id = $1", [
+        body.id,
+      ]);
+
+      await sqs.send(
+        new DeleteMessageCommand({
+          QueueUrl: queueUrl,
+          ReceiptHandle: message.ReceiptHandle,
+        })
+      );
+
+      console.log(`Completed job ${body.id}`);
+      jobsProcessedTotal.inc();
+    } catch (err) {
+      segment.addError(err);
+      jobsFailedTotal.inc();
+      throw err;
+    } finally {
+      segment.close();
+    }
+  });
 }
 
 async function pollLoop() {
@@ -91,6 +129,19 @@ function startHealthServer() {
     if (req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+    if (req.url === "/metrics") {
+      client.register
+        .metrics()
+        .then((metrics) => {
+          res.writeHead(200, { "Content-Type": client.register.contentType });
+          res.end(metrics);
+        })
+        .catch((err) => {
+          res.writeHead(500);
+          res.end(err.message);
+        });
       return;
     }
     res.writeHead(404);

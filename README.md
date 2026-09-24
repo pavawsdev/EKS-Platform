@@ -15,15 +15,16 @@ application onto AWS EKS using:
 
 ```
 terraform/
-  modules/            # vpc, oidc, eks, add-ons, alb, argocd, bastion, cognito, rds, vault
+  modules/            # vpc, oidc, eks, add-ons, alb, argocd, bastion, cognito, rds, vault, observability
   environments/        # root config that wires modules together, one per workspace
     tfvars/             # dev.tfvars, prod.tfvars
 apps/
   frontend/            # sample React app
-  backend/             # sample Node/Express API
+  backend/             # sample Node/Express API - index.js (HTTP), worker.js (SQS consumer), cron.js (scheduled task)
 helm/
   frontend/            # Helm chart + values-{dev,prod}.yaml
   backend/             # same, plus Vault Agent Injector annotations
+  worker/              # queue-driven worker + cron workload (KEDA-scaled)
 argocd/
   applications/        # one Application manifest per service per environment
   projects/            # AppProject (RBAC boundary)
@@ -125,6 +126,41 @@ In CI, `VAULT_TOKEN` is stored as a GitHub Actions secret and
 `TF_VAR_configure_vault` is driven by the `CONFIGURE_VAULT` repository/
 environment variable (defaults to `false` so a fresh environment's first
 pipeline run doesn't fail trying to configure an uninitialized Vault).
+
+## Observability
+
+Off by default (`enable_observability = false` in both `dev.tfvars` and
+`prod.tfvars`) — not applied anywhere yet. When enabled, `terraform/modules/observability`
+provisions:
+
+- **CloudWatch Container Insights** (pod/node logs + metrics) via the
+  `amazon-cloudwatch-observability` EKS addon
+- **Amazon Managed Prometheus (AMP)** for Kubernetes/application metrics
+- **AWS X-Ray** for distributed traces, via an ADOT (AWS Distro for
+  OpenTelemetry) collector deployed through the `adot` EKS addon
+- **Amazon Managed Grafana** as the dashboard layer, configured for `AWS_SSO`
+  authentication, with Prometheus/CloudWatch/X-Ray wired in as data sources
+
+The backend app (`index.js`/`worker.js`) ships with X-Ray tracing and a
+Prometheus `/metrics` endpoint built in either way — they're inert until
+`AWS_XRAY_DAEMON_ADDRESS` is set and `helm/backend`/`helm/worker`'s
+`observability.enabled` is flipped to `true` (which also adds the
+`prometheus.io/scrape` pod annotations the ADOT collector's Prometheus
+receiver looks for).
+
+**Manual step, same treatment as Vault above**: Amazon Managed Grafana needs
+AWS IAM Identity Center enabled to log in — this account doesn't have it
+enabled yet, and turning it on for the first time is a console-driven,
+account-level action, not something a single `terraform apply` can do.
+Enable Identity Center, then assign yourself (or a group) to the Grafana
+workspace, before expecting to log in — this may need to happen *before*
+`terraform apply` succeeds at all, not just before login works, depending on
+how the AWS provider validates `authentication_providers = ["AWS_SSO"]` at
+create time.
+
+**Cost**: AMP, Managed Grafana, Container Insights, and X-Ray all bill based
+on usage — review current AWS pricing before enabling this in a long-lived
+environment.
 
 ## Bootstrap (one-time, before first `terraform init`)
 

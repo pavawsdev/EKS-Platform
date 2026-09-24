@@ -8,10 +8,35 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 const { SQSClient, SendMessageCommand, GetQueueAttributesCommand } = require("@aws-sdk/client-sqs");
+const AWSXRay = require("aws-xray-sdk-core");
+const XRayExpress = require("aws-xray-sdk-express");
+const client = require("@prometheus-io/client");
+
+// Traces go to the ADOT collector's X-Ray-daemon-protocol receiver (see
+// terraform/modules/observability) - only set once observability.enabled
+// is turned on for this env (see helm/backend/values-<env>.yaml). With no
+// daemon address the SDK just fails silently to send segments, which is
+// fine for local/dev-without-observability runs.
+if (process.env.AWS_XRAY_DAEMON_ADDRESS) {
+  AWSXRay.setDaemonAddress(process.env.AWS_XRAY_DAEMON_ADDRESS);
+}
+
+client.collectDefaultMetrics();
+const httpRequestsTotal = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests",
+  labelNames: ["method", "route", "status_code"],
+});
+const httpRequestDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "HTTP request duration in seconds",
+  labelNames: ["method", "route", "status_code"],
+});
 
 const app = express();
 const port = process.env.PORT || 8080;
 
+app.use(XRayExpress.openSegment("eksplat-backend"));
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
@@ -23,6 +48,19 @@ app.use(
     legacyHeaders: false,
   })
 );
+app.use((req, res, next) => {
+  const endTimer = httpRequestDuration.startTimer();
+  res.on("finish", () => {
+    // req.route is only set once Express has matched a route - falls back
+    // to the raw path for 404s (no route matched) so those don't all get
+    // grouped under one misleading label value.
+    const route = req.route?.path || req.path;
+    const labels = { method: req.method, route, status_code: res.statusCode };
+    httpRequestsTotal.inc(labels);
+    endTimer(labels);
+  });
+  next();
+});
 
 // DB credentials are injected via a Kubernetes secret (synced from
 // AWS Secrets Manager, see rds module output), never hardcoded here.
@@ -130,6 +168,13 @@ app.get("/api/queue-stats", async (_req, res) => {
     res.status(500).json({ error: "Failed to read queue stats", detail: err.message });
   }
 });
+
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", client.register.contentType);
+  res.end(await client.register.metrics());
+});
+
+app.use(XRayExpress.closeSegment());
 
 ensureJobsTable()
   .then(() => {

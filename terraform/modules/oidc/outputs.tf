@@ -25,3 +25,15 @@ output "worker_role_arn" {
 output "keda_operator_role_arn" {
   value = aws_iam_role.keda_operator.arn
 }
+
+output "cloudwatch_observability_role_arn" {
+  value = aws_iam_role.cloudwatch_observability.arn
+}
+
+output "adot_collector_role_arn" {
+  value = aws_iam_role.adot_collector.arn
+}
+
+output "adot_collector_role_name" {
+  value = aws_iam_role.adot_collector.name
+}
