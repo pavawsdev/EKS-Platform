@@ -101,6 +101,31 @@ module "add_ons" {
 }
 
 ############################################
+# Observability - CloudWatch Container Insights,
+# AMP, X-Ray (via ADOT), Managed Grafana. Gated
+# module-wide behind enable_observability, off by
+# default in both dev/prod tfvars (real ongoing
+# cost, not applied yet - see README
+# "Observability"). Module-level count rather than
+# per-resource since every resource here turns on/
+# off together - no partial-enable scenario.
+############################################
+module "observability" {
+  count  = local.env_config.enable_observability ? 1 : 0
+  source = "../modules/observability"
+
+  name_prefix                       = local.name_prefix
+  cluster_name                      = module.eks.cluster_name
+  aws_region                        = var.aws_region
+  cloudwatch_observability_role_arn = module.oidc.cloudwatch_observability_role_arn
+  adot_collector_role_arn           = module.oidc.adot_collector_role_arn
+  adot_collector_role_name          = module.oidc.adot_collector_role_name
+  tags                              = local.common_tags
+
+  depends_on = [module.add_ons]
+}
+
+############################################
 # ArgoCD (GitOps controller) + app-of-apps bootstrap
 ############################################
 module "argocd" {

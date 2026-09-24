@@ -33,12 +33,16 @@ serviceAccount:
 env:
   AWS_REGION: "" # set per-env
   SQS_QUEUE_URL: "" # set per-env
+  AWS_XRAY_DAEMON_ADDRESS: "" # e.g. adot-collector.adot-collector.svc.cluster.local:2000 - set per-env only once observability.enabled
 
 vault:
   enabled: true
   role: "" # set per-env, e.g. worker-dev (see values-<env>.yaml)
   addr: ""
   dbSecretPath: "" # reuses the same DB secret backend already reads, e.g. secret/data/dev/db
+
+observability:
+  enabled: false # flip once enable_observability=true has been applied and the ADOT collector Service exists
 
 # minReplicaCount: 0 is safe here specifically because the triggers below
 # are external (queue depth) / time-based (cron), not CPU - this is not
