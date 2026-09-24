@@ -1,14 +1,66 @@
+// See ../Dockerfile - both build stages run `apk upgrade` so OS package
+// CVEs (e.g. openssl/libcrypto3/libssl3) get patched at build time
+// regardless of how stale the base image tag's last-published snapshot is.
+const crypto = require("crypto");
 const express = require("express");
 const helmet = require("helmet");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
+const { SQSClient, SendMessageCommand, GetQueueAttributesCommand } = require("@aws-sdk/client-sqs");
+const AWSXRay = require("aws-xray-sdk-core");
+const XRayExpress = require("aws-xray-sdk-express");
+const client = require("@prometheus-io/client");
+
+// Traces go to the ADOT collector's X-Ray-daemon-protocol receiver (see
+// terraform/modules/observability) - only set once observability.enabled
+// is turned on for this env (see helm/backend/values-<env>.yaml). With no
+// daemon address the SDK just fails silently to send segments, which is
+// fine for local/dev-without-observability runs.
+if (process.env.AWS_XRAY_DAEMON_ADDRESS) {
+  AWSXRay.setDaemonAddress(process.env.AWS_XRAY_DAEMON_ADDRESS);
+}
+
+client.collectDefaultMetrics();
+const httpRequestsTotal = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests",
+  labelNames: ["method", "route", "status_code"],
+});
+const httpRequestDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "HTTP request duration in seconds",
+  labelNames: ["method", "route", "status_code"],
+});
 
 const app = express();
 const port = process.env.PORT || 8080;
 
+app.use(XRayExpress.openSegment("eksplat-backend"));
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
+app.use((req, res, next) => {
+  const endTimer = httpRequestDuration.startTimer();
+  res.on("finish", () => {
+    // req.route is only set once Express has matched a route - falls back
+    // to the raw path for 404s (no route matched) so those don't all get
+    // grouped under one misleading label value.
+    const route = req.route?.path || req.path;
+    const labels = { method: req.method, route, status_code: res.statusCode };
+    httpRequestsTotal.inc(labels);
+    endTimer(labels);
+  });
+  next();
+});
 
 // DB credentials are injected via a Kubernetes secret (synced from
 // AWS Secrets Manager, see rds module output), never hardcoded here.
@@ -20,6 +72,25 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   ssl: { rejectUnauthorized: true },
 });
+
+// Credentials resolve via the default chain (IRSA - AWS_ROLE_ARN /
+// AWS_WEB_IDENTITY_TOKEN_FILE are injected onto the pod's service account).
+const sqs = new SQSClient({ region: process.env.AWS_REGION });
+const queueUrl = process.env.SQS_QUEUE_URL;
+
+// No migration framework in this repo - idempotent IF NOT EXISTS matches
+// the rest of the app's simplicity. worker.js runs the same statement.
+async function ensureJobsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS job_runs (
+      id text PRIMARY KEY,
+      payload jsonb,
+      status text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(),
+      processed_at timestamptz
+    )
+  `);
+}
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
@@ -43,6 +114,75 @@ app.get("/api/items", async (_req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Backend listening on port ${port}`);
+// Enqueues a job and returns immediately - worker.js (a separate
+// KEDA-scaled deployment) picks it up asynchronously. Point Postman/curl
+// at this repeatedly to build up queue depth and watch KEDA scale workers
+// from zero.
+app.post("/api/jobs", async (req, res) => {
+  const id = crypto.randomUUID();
+  const payload = req.body ?? {};
+  try {
+    await pool.query("INSERT INTO job_runs (id, payload, status) VALUES ($1, $2, 'queued')", [
+      id,
+      payload,
+    ]);
+    const result = await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: JSON.stringify({ id, payload }),
+      })
+    );
+    res.status(202).json({ jobId: id, sqsMessageId: result.MessageId });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to enqueue job", detail: err.message });
+  }
 });
+
+app.get("/api/jobs/:id", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM job_runs WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+// Demo hook for watching queue depth rise (as Postman fires jobs) and
+// fall (as KEDA-scaled workers drain it).
+app.get("/api/queue-stats", async (_req, res) => {
+  try {
+    const result = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: ["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"],
+      })
+    );
+    res.json({
+      visible: Number(result.Attributes.ApproximateNumberOfMessages),
+      inFlight: Number(result.Attributes.ApproximateNumberOfMessagesNotVisible),
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to read queue stats", detail: err.message });
+  }
+});
+
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", client.register.contentType);
+  res.end(await client.register.metrics());
+});
+
+app.use(XRayExpress.closeSegment());
+
+ensureJobsTable()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Backend listening on port ${port}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Failed to initialize job_runs table", err);
+    process.exit(1);
+  });

@@ -222,3 +222,278 @@ resource "aws_iam_role_policy_attachment" "external_dns" {
   role       = aws_iam_role.external_dns.name
   policy_arn = aws_iam_policy.external_dns.arn
 }
+
+############################################
+# IRSA - backend API (enqueues jobs directly
+# from POST /api/jobs, so it needs SendMessage
+# on the jobs queue - nothing else)
+############################################
+data "aws_iam_policy_document" "backend_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:backend-${var.environment}:backend"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "backend" {
+  name               = "${var.name_prefix}-backend-irsa"
+  assume_role_policy = data.aws_iam_policy_document.backend_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_policy" "backend" {
+  name = "${var.name_prefix}-backend-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = var.sqs_jobs_queue_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "backend" {
+  role       = aws_iam_role.backend.name
+  policy_arn = aws_iam_policy.backend.arn
+}
+
+############################################
+# IRSA - queue worker (consumes/deletes jobs;
+# the CronJob reuses this same role for its
+# Postgres-only task - the unused SQS grant is
+# harmless since cron.js never calls SQS)
+############################################
+data "aws_iam_policy_document" "worker_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:worker-${var.environment}:worker"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "worker" {
+  name               = "${var.name_prefix}-worker-irsa"
+  assume_role_policy = data.aws_iam_policy_document.worker_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_policy" "worker" {
+  name = "${var.name_prefix}-worker-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = var.sqs_jobs_queue_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker" {
+  role       = aws_iam_role.worker.name
+  policy_arn = aws_iam_policy.worker.arn
+}
+
+############################################
+# IRSA - KEDA operator (polls queue depth to
+# decide worker replica count; separate concern
+# from the worker's own consume permissions)
+############################################
+data "aws_iam_policy_document" "keda_operator_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:keda:keda-operator"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "keda_operator" {
+  name               = "${var.name_prefix}-keda-operator-irsa"
+  assume_role_policy = data.aws_iam_policy_document.keda_operator_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_policy" "keda_operator" {
+  name = "${var.name_prefix}-keda-operator-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:GetQueueAttributes"]
+        Resource = var.sqs_jobs_queue_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "keda_operator" {
+  role       = aws_iam_role.keda_operator.name
+  policy_arn = aws_iam_policy.keda_operator.arn
+}
+
+############################################
+# IRSA - CloudWatch Observability EKS addon
+# (Container Insights logs + metrics). Trust
+# condition assumes the addon's default service
+# account is amazon-cloudwatch/cloudwatch-agent -
+# unverified against the specific addon version,
+# see terraform/modules/observability/main.tf.
+############################################
+data "aws_iam_policy_document" "cloudwatch_observability_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:amazon-cloudwatch:cloudwatch-agent"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "cloudwatch_observability" {
+  name               = "${var.name_prefix}-cloudwatch-observability-irsa"
+  assume_role_policy = data.aws_iam_policy_document.cloudwatch_observability_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_observability" {
+  role       = aws_iam_role.cloudwatch_observability.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+############################################
+# IRSA - ADOT collector (exports app traces to
+# X-Ray and app/pod metrics to AMP). Only the
+# X-Ray half is granted here - X-Ray trace
+# ingestion has no resource-level ARNs to scope
+# to, same "*" justification already used for
+# external_dns's Route53 list actions. The AMP
+# half (aps:RemoteWrite) is attached from the
+# observability module once the real workspace
+# ARN exists, to avoid an unscoped grant here.
+############################################
+data "aws_iam_policy_document" "adot_collector_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:adot-collector:adot-collector"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${var.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "adot_collector" {
+  name               = "${var.name_prefix}-adot-collector-irsa"
+  assume_role_policy = data.aws_iam_policy_document.adot_collector_assume.json
+  tags               = var.tags
+}
+
+#checkov:skip=CKV_AWS_355:xray:PutTraceSegments/PutTelemetryRecords are trace-ingestion actions with no resource-level ARNs in AWS's IAM model - "*" is the only valid Resource
+resource "aws_iam_policy" "adot_collector" {
+  name = "${var.name_prefix}-adot-collector-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "adot_collector" {
+  role       = aws_iam_role.adot_collector.name
+  policy_arn = aws_iam_policy.adot_collector.arn
+}

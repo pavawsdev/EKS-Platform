@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: worker-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: eksplat
+  source:
+    repoURL: https://github.com/pavawsdev/EKS-Platform.git
+    targetRevision: dev
+    path: helm/worker
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-dev.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: worker-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  # Without this, ArgoCD's selfHeal reverts every scale event KEDA makes
+  # on its next sync - KEDA owns the worker Deployment's replica count via
+  # its own shadow HPA once the ScaledObject exists.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: worker-dev-worker
+      jsonPointers:
+        - /spec/replicas

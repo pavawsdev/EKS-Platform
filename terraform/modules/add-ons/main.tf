@@ -162,3 +162,44 @@ resource "helm_release" "external_dns" {
 
   depends_on = [kubernetes_service_account.external_dns]
 }
+
+############################################
+# KEDA (event-driven autoscaling) - the operator
+# polls SQS queue depth via its own IRSA role,
+# separate from the worker Deployment's own role.
+############################################
+resource "kubernetes_namespace" "keda" {
+  metadata {
+    name = "keda"
+  }
+}
+
+resource "kubernetes_service_account" "keda_operator" {
+  metadata {
+    name      = "keda-operator"
+    namespace = kubernetes_namespace.keda.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = var.keda_operator_role_arn
+    }
+  }
+}
+
+resource "helm_release" "keda" {
+  name       = "keda"
+  repository = "https://kedacore.github.io/charts"
+  chart      = "keda"
+  namespace  = kubernetes_namespace.keda.metadata[0].name
+  version    = "2.16.0" # verify serviceAccount.operator.* keys still match this version's values schema before applying
+
+  set {
+    name  = "serviceAccount.operator.create"
+    value = "false"
+  }
+
+  set {
+    name  = "serviceAccount.operator.name"
+    value = kubernetes_service_account.keda_operator.metadata[0].name
+  }
+
+  depends_on = [kubernetes_service_account.keda_operator]
+}

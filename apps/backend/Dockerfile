@@ -4,6 +4,7 @@
 # --- build stage ---
 FROM node:24-alpine AS build
 WORKDIR /app
+RUN apk update && apk upgrade --no-cache
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
@@ -11,6 +12,11 @@ COPY . .
 # --- runtime stage ---
 FROM node:24-alpine
 WORKDIR /app
+# Patches OS packages (e.g. openssl/libcrypto3/libssl3 CVEs) at build time
+# regardless of how stale the node:24-alpine tag's last-published snapshot
+# is - Trivy gates the push on CRITICAL/HIGH findings, so an unpatched
+# base image blocks every build until upstream catches up otherwise.
+RUN apk update && apk upgrade --no-cache
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 # npm/npx/corepack are unused at runtime (only `node index.js` runs) -
 # removing them drops their bundled node_modules entirely, which is

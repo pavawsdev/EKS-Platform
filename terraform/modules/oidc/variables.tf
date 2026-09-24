@@ -16,6 +16,16 @@ variable "oidc_provider_arn" {
   type        = string
 }
 
+variable "environment" {
+  description = "dev / prod - used to build the backend/worker namespace strings"
+  type        = string
+}
+
+variable "sqs_jobs_queue_arn" {
+  description = "ARN of the jobs SQS queue, for the backend/worker/keda_operator IRSA policies"
+  type        = string
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

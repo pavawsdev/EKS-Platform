@@ -1,27 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "backend.fullname" . }}
+  name: {{ include "worker.fullname" . }}
   labels:
-    {{- include "backend.labels" . | nindent 4 }}
+    {{- include "worker.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.keda.minReplicaCount }}
   selector:
     matchLabels:
-      {{- include "backend.selectorLabels" . | nindent 6 }}
+      {{- include "worker.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "backend.selectorLabels" . | nindent 8 }}
+        {{- include "worker.selectorLabels" . | nindent 8 }}
       {{- if or .Values.vault.enabled .Values.observability.enabled }}
       annotations:
         {{- if .Values.vault.enabled }}
         vault.hashicorp.com/agent-inject: "true"
         vault.hashicorp.com/role: {{ .Values.vault.role | quote }}
         vault.hashicorp.com/agent-inject-secret-db: {{ .Values.vault.dbSecretPath | quote }}
-        # Renders /vault/secrets/db as a shell-sourceable env file, refreshed
-        # automatically by the agent whenever the secret in Vault changes -
-        # no pod restart or re-deploy needed to pick up a rotated password.
         vault.hashicorp.com/agent-inject-template-db: |
           {{`{{- with secret "`}}{{ .Values.vault.dbSecretPath }}{{`" -}}
           export DB_HOST="{{ .Data.data.host }}"
@@ -37,20 +34,11 @@ spec:
         {{- end }}
       {{- end }}
     spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    {{- include "backend.selectorLabels" . | nindent 20 }}
       serviceAccountName: {{ .Values.serviceAccount.name }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: backend
+        - name: worker
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
@@ -63,7 +51,7 @@ spec:
             - |
               until [ -f /vault/secrets/db ]; do echo "waiting for vault agent to render secrets"; sleep 2; done
               . /vault/secrets/db
-              exec node index.js
+              exec node worker.js
           {{- end }}
           env:
             {{- range $key, $value := .Values.env }}
@@ -72,15 +60,13 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          # No readinessProbe - nothing routes traffic to this pod (no
+          # Service/Ingress), so there's no "ready to receive requests"
+          # signal to give. Liveness only, so Kubernetes can detect a
+          # genuinely hung poll loop and restart it.
           livenessProbe:
             httpGet:
               path: /health
               port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 10
             periodSeconds: 15
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: {{ .Values.service.targetPort }}
-            initialDelaySeconds: 5
-            periodSeconds: 10

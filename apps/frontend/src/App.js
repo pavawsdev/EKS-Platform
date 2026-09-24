@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 
 // The backend URL is injected at deploy time via an environment variable
 // set in helm/frontend/values-<env>.yaml, so the same image works in
-// dev, test, and prod without a rebuild.
+// dev and prod without a rebuild. See ../Dockerfile - both build stages
+// run `apk upgrade` so OS package CVEs get patched at build time.
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "/api/items";
 
 function App() {

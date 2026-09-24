@@ -75,10 +75,11 @@ variable "environment_config" {
     rds_deletion_protection     = bool
     rds_backup_retention_period = number
 
-    enable_external_dns = bool
-    hosted_zone_id      = string
-    create_acm_cert     = bool
-    enable_waf          = bool
+    enable_external_dns  = bool
+    hosted_zone_id       = string
+    create_acm_cert      = bool
+    enable_waf           = bool
+    enable_observability = bool
   }))
 }
 
