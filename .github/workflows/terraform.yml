@@ -260,3 +260,36 @@ jobs:
       - run: |
           terraform destroy -auto-approve \
             -var-file="tfvars/${{ needs.determine-env.outputs.environment }}.tfvars"
+
+  # Reports the outcome of the run above to Teams regardless of which jobs
+  # actually executed - plan/apply/destroy are mutually exclusive per run
+  # (gated by the dispatch `action` input), so most of these show up as
+  # "skipped" in needs.*.result, not "failure" - only a real failure or
+  # cancellation in any job that did run should flip the card red/yellow.
+  notify:
+    needs: [determine-env, validate-env, plan, apply, destroy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.determine-env.result }}" "${{ needs.validate-env.result }}" "${{ needs.plan.result }}" "${{ needs.apply.result }}" "${{ needs.destroy.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "Terraform Infrastructure"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Environment: ${{ needs.determine-env.outputs.environment }}
+            Action: ${{ inputs.action || 'plan (auto)' }}
+            Triggered by: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
