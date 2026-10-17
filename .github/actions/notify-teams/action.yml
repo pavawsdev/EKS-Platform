@@ -1,0 +1,98 @@
+name: "Notify Microsoft Teams"
+description: "Posts a pipeline result card to a Microsoft Teams channel via webhook"
+
+inputs:
+  webhook-url:
+    description: "Teams channel webhook URL (Workflows app 'Post to a channel when a webhook request is received' trigger URL)"
+    required: true
+  title:
+    description: "Card title, e.g. 'Terraform Infrastructure'"
+    required: true
+  status:
+    description: "success | failure | cancelled"
+    required: true
+  details:
+    description: "Newline-separated 'Label: value' pairs rendered as facts on the card"
+    required: false
+    default: ""
+  run-url:
+    description: "Link to the triggering workflow run"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Post to Teams
+      shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        CARD_TITLE: ${{ inputs.title }}
+        CARD_STATUS: ${{ inputs.status }}
+        CARD_DETAILS: ${{ inputs.details }}
+        CARD_RUN_URL: ${{ inputs.run-url }}
+      run: |
+        set -euo pipefail
+
+        # No-op until TEAMS_WEBHOOK_URL exists (e.g. personal Teams Free has
+        # no Channels/Workflows app to generate one from) - keeps this step
+        # wired into all 4 workflows with nothing to re-enable later, rather
+        # than failing every run or needing to comment the step back in once
+        # a real webhook URL is available.
+        if [ -z "$WEBHOOK_URL" ]; then
+          echo "TEAMS_WEBHOOK_URL not set - skipping Teams notification."
+          exit 0
+        fi
+
+        if [ "$CARD_STATUS" == "success" ]; then
+          COLOR="Good"
+          ICON="✅"
+        elif [ "$CARD_STATUS" == "cancelled" ]; then
+          COLOR="Warning"
+          ICON="⚠️"
+        else
+          COLOR="Attention"
+          ICON="❌"
+        fi
+
+        # Build the FactSet from "Label: value" lines without shelling out
+        # per-line - jq's -R/-s (raw/slurp) reads the whole block as one
+        # string, splits it, and filters blanks, so an empty $CARD_DETAILS
+        # (e.g. a workflow that passes no details) yields an empty facts
+        # array instead of one bogus blank fact.
+        FACTS_JSON=$(printf '%s' "$CARD_DETAILS" | jq -R -s '
+          split("\n") | map(select(length > 0)) | map(
+            capture("^(?<k>[^:]+):\\s*(?<v>.*)$") |
+            {title: .k, value: .v}
+          )
+        ')
+
+        PAYLOAD=$(jq -n \
+          --arg title "$CARD_TITLE" \
+          --arg icon "$ICON" \
+          --arg status "$CARD_STATUS" \
+          --arg color "$COLOR" \
+          --arg runUrl "$CARD_RUN_URL" \
+          --argjson facts "$FACTS_JSON" \
+          '{
+            type: "message",
+            attachments: [{
+              contentType: "application/vnd.microsoft.card.adaptive",
+              content: {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                type: "AdaptiveCard",
+                version: "1.4",
+                body: [
+                  { type: "TextBlock", text: ($icon + " " + $title), weight: "Bolder", size: "Medium", wrap: true },
+                  { type: "TextBlock", text: ("Status: " + $status), color: $color, weight: "Bolder", wrap: true },
+                  { type: "FactSet", facts: $facts }
+                ],
+                actions: [
+                  { type: "Action.OpenUrl", title: "View run", url: $runUrl }
+                ]
+              }
+            }]
+          }')
+
+        curl --fail-with-body -sS -X POST "$WEBHOOK_URL" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD"

@@ -189,3 +189,30 @@ jobs:
           git add helm/frontend/values-*.yaml
           git commit -m "ci: bump frontend image to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]" || echo "no changes"
           git push
+
+  notify:
+    needs: [test, build-and-push, update-manifest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.test.result }}" "${{ needs.build-and-push.result }}" "${{ needs.update-manifest.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "Frontend CI/CD"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Image tag: ${{ needs.build-and-push.outputs.image_tag }}
+            Triggered by: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

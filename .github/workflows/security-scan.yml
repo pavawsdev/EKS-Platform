@@ -174,3 +174,30 @@ jobs:
         uses: stackrox/kube-linter-action@v1
         with:
           directory: helm
+
+  notify:
+    needs: [changes, gitleaks, tfsec, checkov, codeql, dependency-scan, kube-linter]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.changes.result }}" "${{ needs.gitleaks.result }}" "${{ needs.tfsec.result }}" "${{ needs.checkov.result }}" "${{ needs.codeql.result }}" "${{ needs.dependency-scan.result }}" "${{ needs.kube-linter.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "Security Scans"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Triggered by: ${{ github.actor }}
+            Event: ${{ github.event_name }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
