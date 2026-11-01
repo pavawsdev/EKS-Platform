@@ -43,10 +43,33 @@ resource "helm_release" "argocd" {
 }
 
 ############################################
+# AppProject bootstrap
+# Every Application below (and everything the
+# app-of-apps recurses into) references
+# `project: eksplat` - previously this project
+# was never actually applied anywhere (not in
+# Terraform, not in any workflow), so a fresh
+# ArgoCD instance had nothing for its child
+# Applications to sync against until someone
+# applied argocd/projects/eksplat-project.yaml
+# by hand. Content is environment-agnostic
+# (sourceRepos/destinations aren't per-env), so
+# it's applied as-is via file(), not templated.
+############################################
+resource "kubectl_manifest" "app_project" {
+  yaml_body  = file("${path.module}/../../../argocd/projects/eksplat-project.yaml")
+  depends_on = [helm_release.argocd]
+}
+
+############################################
 # App-of-Apps bootstrap
-# Points ArgoCD at the argocd/applications
-# folder in this same repo, one Application
-# per environment/service.
+# Points ArgoCD at this environment's own
+# subfolder under argocd/applications/ - each
+# environment's ArgoCD instance only ever
+# recurses its own subfolder, so it can never
+# construct another environment's Applications
+# (e.g. dev's ArgoCD building a backend-prod
+# Application pointed at prod's Vault paths).
 ############################################
 resource "kubectl_manifest" "app_of_apps" {
   yaml_body = yamlencode({
@@ -62,7 +85,7 @@ resource "kubectl_manifest" "app_of_apps" {
       source = {
         repoURL        = var.repo_url
         targetRevision = var.target_revision
-        path           = "argocd/applications"
+        path           = "argocd/applications/${var.environment}"
         directory = {
           recurse = true
         }
@@ -81,5 +104,5 @@ resource "kubectl_manifest" "app_of_apps" {
     }
   })
 
-  depends_on = [helm_release.argocd]
+  depends_on = [helm_release.argocd, kubectl_manifest.app_project]
 }
