@@ -1,0 +1,79 @@
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/eksplat-frontend
+  tag: "initial" # CI overwrites this with a commit-sha tag on every build; never left as "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 101
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: frontend
+
+podAntiAffinity: true
+
+env:
+  REACT_APP_BACKEND_URL: "/api/items"
+
+probes:
+  readiness:
+    path: /
+
+# nginx-unprivileged needs to write cache/temp files and its pid even
+# though the image root filesystem itself is read-only.
+extraVolumeMounts:
+  - name: nginx-cache
+    mountPath: /var/cache/nginx
+  - name: nginx-run
+    mountPath: /tmp
+extraVolumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+
+ingress:
+  enabled: true
+  scheme: internet-facing
+  host: app.example.internal
+  wafArn: ""
+  certificateArn: ""
+  cognito:
+    enabled: false
+    userPoolArn: ""
+    userPoolClientId: ""
+    userPoolDomain: ""
+
+environment: dev
+
+tags:
+  project: eksplat
+  component: frontend

@@ -1,0 +1,62 @@
+environment: prod
+replicaCount: 2
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+image:
+  tag: "initial"
+vault:
+  enabled: true
+  role: "vulntracker-notify-prod"
+  addr: "https://vault.prod.example.internal"
+  run: "node src/index.js"
+  secrets:
+    - name: notify
+      path: "secret/data/prod/vulntracker-notify"
+      body: |
+        {{- with secret "secret/data/prod/vulntracker-notify" -}}
+        export SERVICE_KEY="{{ .Data.data.service_key }}"
+        {{- end }}
+networkPolicy:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vulntracker
+      ports:
+        - port: 3001
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "169.254.169.254/32"
+              - "10.20.0.0/16"
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+tags:
+  environment: prod

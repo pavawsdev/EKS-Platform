@@ -1,0 +1,257 @@
+name: Reusable Terraform Plan/Apply/Destroy
+
+# Parameterized by environment (dev/stage/prod) so ci.yml can call this once
+# per environment that actually changed, instead of a single branch-inferred
+# determine-env job that couldn't express "stage changed, dev and prod
+# didn't" - the environment is decided by ci.yml's own `changes` job
+# (which directory under terraform/environments/ changed, or - for a push
+# touching a shared root/module file - all three) or, for workflow_dispatch,
+# by the explicit environment input, never inferred from branch.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "dev, stage, or prod"
+        required: true
+        type: string
+      action:
+        description: "plan, apply, or destroy - apply/destroy only take effect on workflow_dispatch"
+        required: false
+        type: string
+        default: "plan"
+    secrets:
+      AWS_DEPLOY_ROLE_ARN:
+        required: true
+      VAULT_TOKEN:
+        required: false
+      GITOPS_GITHUB_PAT:
+        required: false
+      TEAMS_WEBHOOK_URL:
+        required: false
+
+env:
+  TF_VERSION: "1.7.5"
+  TF_WORKING_DIR: terraform/environments
+
+jobs:
+  # Fails fast with a clear message if the resolved environment has no
+  # matching tfvars file, instead of a confusing error partway through
+  # `terraform plan`/`apply`, or worse, "Select/Create Workspace" silently
+  # creating a new empty workspace that has no tfvars backing it at all.
+  validate-env:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify terraform.tfvars exists for this environment
+        run: |
+          FILE="${{ env.TF_WORKING_DIR }}/${{ inputs.environment }}/terraform.tfvars"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::No terraform.tfvars for environment '${{ inputs.environment }}' (expected $FILE)"
+            exit 1
+          fi
+          echo "Found $FILE"
+
+  tf-plan:
+    needs: validate-env
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-plan
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      # Vault token is the bootstrap/root token from the one-time
+      # `vault operator init` - stored as a GitHub secret, never in tfvars.
+      # See README "Vault bootstrap".
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Select/Create Workspace
+        run: |
+          terraform workspace select ${{ inputs.environment }} \
+          || terraform workspace new ${{ inputs.environment }}
+
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ inputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file="${{ inputs.environment }}/terraform.tfvars" \
+            -out=tfplan \
+            -no-color | tee plan_output.txt
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8').slice(0, 60000);
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform Plan (${{ inputs.environment }})\n\`\`\`\n${plan}\n\`\`\``
+            });
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+  tf-apply:
+    needs: [validate-env, tf-plan]
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    # The "prod" (and, if configured, "stage") GitHub Environment has a
+    # required-reviewer rule attached (repo Settings > Environments) - "dev"
+    # doesn't, so dev applies run straight through once dispatched, prod
+    # applies wait for approval.
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Select Workspace
+        run: terraform workspace select ${{ inputs.environment }}
+
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ inputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+  tf-destroy:
+    needs: validate-env
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-destroy
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    env:
+      # Needed so the vault provider can authenticate to tear down the
+      # vault_kv_secret_v2 / auth backend / policy resources cleanly.
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_configure_vault: ${{ vars.CONFIGURE_VAULT || 'false' }}
+      TF_VAR_github_token: ${{ secrets.GITOPS_GITHUB_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - run: terraform init -input=false
+      - run: terraform workspace select ${{ inputs.environment }}
+
+      - name: Verify workspace matches expected environment
+        run: |
+          CURRENT=$(terraform workspace show)
+          EXPECTED="${{ inputs.environment }}"
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "::error::Selected workspace '$CURRENT' does not match expected environment '$EXPECTED'"
+            exit 1
+          fi
+
+      - run: |
+          terraform destroy -auto-approve \
+            -var-file="${{ inputs.environment }}/terraform.tfvars"
+
+  # plan/apply/destroy are mutually exclusive per run (gated by the dispatch
+  # `action` input), so most of these show up as "skipped" in needs.*.result,
+  # not "failure" - only a real failure or cancellation in any job that did
+  # run should flip the card red/yellow.
+  tf-notify:
+    needs: [validate-env, tf-plan, tf-apply, tf-destroy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.validate-env.result }}" "${{ needs.tf-plan.result }}" "${{ needs.tf-apply.result }}" "${{ needs.tf-destroy.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "Terraform Infrastructure (${{ inputs.environment }})"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Environment: ${{ inputs.environment }}
+            Action: ${{ inputs.action }}
+            Triggered by: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

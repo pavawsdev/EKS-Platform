@@ -1,0 +1,94 @@
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/eksplat-vulntracker
+  tag: "initial" # CI overwrites this with a commit-sha tag on every build; never left as "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# No PVC/writable volumes needed - the app talks to the shared RDS instance
+# over the network, not a local SQLite file. /tmp still needs to be
+# writable (Python/uvicorn scratch space) under readOnlyRootFilesystem.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: vulntracker
+
+# Fixed, not Release.Name-derived - see templates/_helpers.tpl in the
+# generic chart for why (vulntracker/vulntracker-notify address each other
+# by a hardcoded in-cluster Service DNS name).
+nameOverride: vulntracker
+
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+
+# Non-secret config only. DB credentials and the JWT signing key come from
+# Vault via the agent injector below - same convention as gitops/apps/backend.
+env:
+  NOTIFY_SERVICE_URL: "http://vulntracker-notify" # in-cluster Service DNS, same namespace; Service listens on 80 (default), proxies to the container's 3001
+  PUBLIC_BASE_URL: "" # set per-env - share_url is built from this, never the request Host header
+
+probes:
+  liveness:
+    path: /health
+  readiness:
+    path: /health
+
+# role/addr/secrets are set per-env (see values-<env>.yaml) - the Vault
+# Agent template bodies embed that env's literal secret path.
+vault:
+  enabled: true
+  run: "uvicorn main:app --host 0.0.0.0 --port 8000"
+
+ingress:
+  enabled: false
+
+# Default-deny for this pod in both directions, then allow only what's
+# needed. ALB sends traffic directly to pod IPs from ENIs inside the VPC
+# (target-type: ip) - there's no in-cluster ingress-controller pod to scope
+# ingress to, so the allowed source is the VPC CIDR itself, set per-env.
+# Full ingress/egress lists are set per-env (see values-<env>.yaml) since
+# the VPC CIDR differs per environment.
+networkPolicy:
+  enabled: true
+
+environment: dev
+
+tags:
+  project: eksplat
+  component: vulntracker

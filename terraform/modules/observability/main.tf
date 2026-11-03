@@ -174,8 +174,8 @@ resource "kubectl_manifest" "adot_collector_rbac_binding" {
 # aws-xray-sdk-core speaks by default, so app code needs
 # no trace-protocol changes - plus OTLP for future use)
 # and scrapes Prometheus metrics from pods annotated
-# prometheus.io/scrape=true (see helm/backend and
-# helm/worker's observability.enabled toggle), exporting
+# prometheus.io/scrape=true (see gitops/apps/backend and
+# gitops/apps/worker's observability.enabled toggle), exporting
 # traces to X-Ray and metrics to this AMP workspace.
 #
 # apiVersion assumes the OpenTelemetry Operator version

@@ -1,10 +1,16 @@
 name: Security Scans
 
+# workflow_call-only, deliberately - this used to also trigger directly on
+# push/pull_request, which meant it ran a second time (duplicated) whenever
+# a different workflow also called it via workflow_call (ci.yml does, for
+# every push/PR). Only the orchestrator (ci.yml) invokes this now, exactly
+# once per run, with every app-build and every terraform plan/apply/destroy
+# gated behind it via `needs:`.
 on:
   workflow_call:
-  pull_request:
-  push:
-    branches: [dev, main]
+    secrets:
+      TEAMS_WEBHOOK_URL:
+        required: false
 
 permissions:
   contents: read
@@ -21,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       terraform: ${{ steps.filter.outputs.terraform }}
-      helm: ${{ steps.filter.outputs.helm }}
+      gitops_apps: ${{ steps.filter.outputs.gitops_apps }}
     steps:
       # paths-filter needs a real git history to diff against on `push`
       # events (it only skips this and uses the GitHub API instead on
@@ -37,8 +43,8 @@ jobs:
           filters: |
             terraform:
               - 'terraform/**'
-            helm:
-              - 'helm/**'
+            gitops_apps:
+              - 'gitops/apps/**'
 
   # ---- Secret scanning ----
   gitleaks:
@@ -97,8 +103,8 @@ jobs:
           # can't resolve them and falls back to conservative module
           # defaults, producing false positives (e.g. the EKS public
           # endpoint CIDR check).
-          var_file: terraform/environments/tfvars/dev.tfvars
-          # These 5 checks are intentionally, permanently skipped repo-wide
+          var_file: terraform/environments/dev/terraform.tfvars
+          # These 8 checks are intentionally, permanently skipped repo-wide
           # (each also has an inline #checkov:skip with the full reasoning
           # at its resource - some of these run as graph-based checks in
           # this checkov version and don't honor inline comments, hence
@@ -114,7 +120,15 @@ jobs:
           #     restricted) since GitHub-hosted runners aren't in the VPC
           #   CKV_AWS_51  - ECR tags must stay mutable so CI can re-push a
           #     floating :latest tag alongside each commit-sha tag
-          skip_check: CKV_AWS_260,CKV2_AWS_5,CKV_AWS_355,CKV2_AWS_57,CKV_AWS_39,CKV_AWS_51
+          #   CKV_AWS_157, CKV_AWS_133, CKV_AWS_293 - RDS multi_az/backup/
+          #     deletion_protection all come from var.environment_config
+          #     [terraform.workspace] in main.tf, which checkov's static
+          #     scan can never resolve (it has no active workspace) - these
+          #     always read as unset/default here no matter what each
+          #     environment's terraform.tfvars actually sets. See
+          #     terraform/modules/rds/main.tf for the real per-environment
+          #     values this can't see.
+          skip_check: CKV_AWS_260,CKV2_AWS_5,CKV_AWS_355,CKV2_AWS_57,CKV_AWS_39,CKV_AWS_51,CKV_AWS_157,CKV_AWS_133,CKV_AWS_293
           soft_fail: false
       - name: Upload Checkov SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -127,7 +141,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        language: ["javascript"]
+        # python added alongside javascript once apps/vulntracker (FastAPI)
+        # landed - CodeQL only covered JS/TS before that.
+        language: ["javascript", "python"]
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
@@ -147,7 +163,25 @@ jobs:
       - name: npm audit - backend
         working-directory: apps/backend
         run: npm audit --audit-level=high || true
-      - name: Trivy filesystem scan
+
+      # Keyed on today's date, not indefinitely - caps how stale the DB can
+      # get at ~24h, so caching for speed never means scanning against a
+      # vulnerability DB that's days or weeks out of date. restore-keys
+      # falls back to the most recent cache if today's key doesn't exist
+      # yet (avoids a cold download on the first run of a new day).
+      - name: Determine today's date (for Trivy DB cache key)
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-v0.72.0-${{ steps.date.outputs.date }}
+          restore-keys: |
+            trivy-db-v0.72.0-
+
+      - name: Trivy filesystem scan (SARIF, for GitHub code scanning)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -155,12 +189,51 @@ jobs:
           severity: CRITICAL,HIGH
           format: sarif
           output: trivy-fs.sarif
-          # see frontend-ci.yml/backend-ci.yml for why this is pinned
+          # Same version used everywhere else Trivy runs in this pipeline
+          # (_app-ci.yml's image scans) - keeps results comparable.
           version: v0.72.0
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: trivy-fs.sarif
+
+      # Trivy can't emit two formats from one run, so this re-scans (fast -
+      # same local cache/DB as the SARIF run above) to get JSON instead, the
+      # shape parse_vulnerabilities.py below actually consumes. SARIF stays
+      # the system of record for gating (GitHub code scanning); this report
+      # is a separate, customer-facing artifact, not a second gate.
+      - name: Trivy filesystem scan (JSON, for the vulnerability report below)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          format: json
+          output: trivy-fs.json
+          version: v0.72.0
+
+      - name: Set up Python
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate Critical/High vulnerability report (CSV + JSON)
+        if: always()
+        run: |
+          python .github/scripts/parse_vulnerabilities.py trivy-fs.json \
+            --json-out vulnerability-report.json \
+            --csv-out vulnerability-report.csv
+
+      - name: Upload vulnerability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnerability-report
+          path: |
+            vulnerability-report.json
+            vulnerability-report.csv
 
   # ---- Kubernetes / Helm manifest scanning ----
   kube-linter:
@@ -168,12 +241,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.helm == 'true'
+        if: needs.changes.outputs.gitops_apps == 'true'
       - name: KubeLinter - Helm chart best practices
-        if: needs.changes.outputs.helm == 'true'
+        if: needs.changes.outputs.gitops_apps == 'true'
         uses: stackrox/kube-linter-action@v1
         with:
-          directory: helm
+          directory: gitops/apps
 
   notify:
     needs: [changes, gitleaks, tfsec, checkov, codeql, dependency-scan, kube-linter]

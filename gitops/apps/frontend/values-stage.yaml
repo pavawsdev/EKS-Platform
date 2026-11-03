@@ -1,0 +1,8 @@
+environment: stage
+replicaCount: 2
+image:
+  tag: "initial"
+ingress:
+  host: stage.example.internal
+tags:
+  environment: stage
