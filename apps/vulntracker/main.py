@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 import models
 from auth import create_access_token, get_current_user, get_password_hash, verify_password
-from config import NOTIFY_SERVICE_URL, PUBLIC_BASE_URL, SHARE_LINK_TTL_HOURS, SHARE_MAX_PASSWORD_ATTEMPTS
+from config import DEBUG, NOTIFY_SERVICE_URL, PUBLIC_BASE_URL, SHARE_LINK_TTL_HOURS, SHARE_MAX_PASSWORD_ATTEMPTS
 from database import engine, get_db, search_scans_by_query
 
 logging.basicConfig(level=logging.INFO)
@@ -42,16 +42,22 @@ async def cors_middleware(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error("Unhandled exception on %s: %s", request.url, exc)
-    return JSONResponse(
-        status_code=500,
-        content={
+    # Full details always go to the server log, which is where they
+    # belong - never to the client. CodeQL flags the old version of this
+    # (py/stack-trace-exposure): returning str(exc)/traceback.format_exc()
+    # straight to the caller leaks internal paths, library versions and
+    # logic to anyone who can trigger a 500.
+    logger.error("Unhandled exception on %s: %s", request.url, exc, exc_info=True)
+    if DEBUG:
+        content = {
             "error": str(exc),
             "type": type(exc).__name__,
             "traceback": traceback.format_exc(),
             "path": str(request.url),
-        },
-    )
+        }
+    else:
+        content = {"error": "Internal server error"}
+    return JSONResponse(status_code=500, content=content)
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 NOTIFY_SERVICE_URL = os.getenv("NOTIFY_SERVICE_URL", "http://localhost:3001")
 
+# Off by default everywhere, including dev - the global exception handler
+# uses this to decide whether to return the raw exception/traceback to the
+# client. Opt in locally via DEBUG=true if you need it; never set in any
+# deployed environment's values file.
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
 # Configured base URL, not the client-controlled Host header (prevents host-header injection)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 
