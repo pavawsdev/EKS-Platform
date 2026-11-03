@@ -1,10 +1,16 @@
 name: Security Scans
 
+# workflow_call-only, deliberately - this used to also trigger directly on
+# push/pull_request, which meant it ran a second time (duplicated) whenever
+# a different workflow also called it via workflow_call (ci.yml does, for
+# every push/PR). Only the orchestrator (ci.yml) invokes this now, exactly
+# once per run, with every app-build and every terraform plan/apply/destroy
+# gated behind it via `needs:`.
 on:
   workflow_call:
-  pull_request:
-  push:
-    branches: [dev, main]
+    secrets:
+      TEAMS_WEBHOOK_URL:
+        required: false
 
 permissions:
   contents: read
@@ -21,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       terraform: ${{ steps.filter.outputs.terraform }}
-      helm: ${{ steps.filter.outputs.helm }}
+      gitops_apps: ${{ steps.filter.outputs.gitops_apps }}
     steps:
       # paths-filter needs a real git history to diff against on `push`
       # events (it only skips this and uses the GitHub API instead on
@@ -37,8 +43,8 @@ jobs:
           filters: |
             terraform:
               - 'terraform/**'
-            helm:
-              - 'helm/**'
+            gitops_apps:
+              - 'gitops/apps/**'
 
   # ---- Secret scanning ----
   gitleaks:
@@ -97,7 +103,7 @@ jobs:
           # can't resolve them and falls back to conservative module
           # defaults, producing false positives (e.g. the EKS public
           # endpoint CIDR check).
-          var_file: terraform/environments/tfvars/dev.tfvars
+          var_file: terraform/environments/dev/terraform.tfvars
           # These 5 checks are intentionally, permanently skipped repo-wide
           # (each also has an inline #checkov:skip with the full reasoning
           # at its resource - some of these run as graph-based checks in
@@ -127,7 +133,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        language: ["javascript"]
+        # python added alongside javascript once apps/vulntracker (FastAPI)
+        # landed - CodeQL only covered JS/TS before that.
+        language: ["javascript", "python"]
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
@@ -168,12 +176,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.helm == 'true'
+        if: needs.changes.outputs.gitops_apps == 'true'
       - name: KubeLinter - Helm chart best practices
-        if: needs.changes.outputs.helm == 'true'
+        if: needs.changes.outputs.gitops_apps == 'true'
         uses: stackrox/kube-linter-action@v1
         with:
-          directory: helm
+          directory: gitops/apps
 
   notify:
     needs: [changes, gitleaks, tfsec, checkov, codeql, dependency-scan, kube-linter]

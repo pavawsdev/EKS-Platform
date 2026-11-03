@@ -48,10 +48,10 @@ variable "ec2_key_name" {
   default     = ""
 }
 
-# Per-workspace (dev/prod) sizing and topology, keyed by
-# terraform.workspace name. Populated from tfvars/<env>.tfvars.
+# Per-workspace (dev/stage/prod) sizing and topology, keyed by
+# terraform.workspace name. Populated from <env>/terraform.tfvars.
 variable "environment_config" {
-  description = "Per-environment (dev/prod) configuration, keyed by workspace name"
+  description = "Per-environment (dev/stage/prod) configuration, keyed by workspace name"
   type = map(object({
     vpc_cidr               = string
     azs                    = list(string)

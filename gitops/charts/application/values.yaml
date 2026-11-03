@@ -1,0 +1,127 @@
+# Generic chart defaults - every field a per-service values.yaml might need
+# to override is declared here so that service, which doesn't need a given
+# feature (e.g. frontend has no vault secrets), can simply omit that block
+# and inherit a safe "off" default instead of every service having to
+# repeat `enabled: false`.
+
+# Set only by vulntracker/vulntracker-notify - fixes the resource name
+# regardless of Release.Name, since they address each other by a hardcoded
+# in-cluster Service DNS name. See templates/_helpers.tpl for why.
+nameOverride: ""
+
+replicaCount: 2
+
+image:
+  repository: ""
+  tag: "initial"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: ""
+  irsaRoleArn: ""
+
+# Spreads replicas across nodes - only meaningful for request-driven
+# services with >1 replica and no persistent state (backend, frontend).
+podAntiAffinity: false
+
+# Arbitrary non-secret env vars - key is used as-is for the env var name.
+env: {}
+
+# Readiness/liveness HTTP GET paths - the only probe field that varies
+# across services; initialDelay/period are identical everywhere.
+probes:
+  liveness:
+    path: /health
+  readiness:
+    path: /health
+
+# Non-secret config only. DB credentials, JWT signing keys, and API tokens
+# come from Vault via the agent injector - nothing secret ever sits in a
+# Helm value, a ConfigMap, or a plain Kubernetes Secret.
+vault:
+  enabled: false
+  role: ""
+  addr: ""
+  # One entry per Vault secret to inject. `path` is the Vault KV path (also
+  # used by the agent-inject-secret-<name> annotation); `body` is the raw
+  # Vault Agent template text (Vault's own Go-template syntax over
+  # `.Data.data.*` - stored as plain string data here, so Helm never tries
+  # to evaluate it; only Vault Agent does, at render time in the sidecar).
+  # `consumeAs` controls how the container's startup wrapper consumes the
+  # rendered file: omitted/"source" runs `. /vault/secrets/<name>`;
+  # "env:VAR_NAME" instead exports VAR_NAME=/vault/secrets/<name> (for an
+  # app that wants a file *path*, not sourced shell exports - e.g. a JWT
+  # signing key file).
+  secrets: []
+  # Final `exec` line of the generated startup wrapper - only used when
+  # vault.enabled is true.
+  run: ""
+
+# Flips on `prometheus.io/scrape` pod annotations once the ADOT collector
+# Service exists for this environment - see README "Observability".
+observability:
+  enabled: false
+
+ingress:
+  enabled: false
+  host: ""
+  scheme: internal # internal | internet-facing
+  certificateArn: ""
+  wafArn: ""
+  cognito:
+    enabled: false
+    userPoolArn: ""
+    userPoolClientId: ""
+    userPoolDomain: ""
+
+# Default-deny in both directions once enabled, then allow only what's
+# listed. `ingress`/`egress` entries are native Kubernetes NetworkPolicy
+# peer/port objects, embedded verbatim (not a custom DSL) - these already
+# vary enough in shape across services that reproducing the real schema
+# directly is simpler and safer than inventing an abstraction over it.
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
+
+# Extra Volumes/VolumeMounts for services that need writable scratch space
+# under a read-only root filesystem (frontend's nginx cache, vulntracker's
+# /tmp) - native Kubernetes Volume/VolumeMount objects, embedded verbatim.
+extraVolumes: []
+extraVolumeMounts: []
+
+environment: dev
+
+tags:
+  project: eksplat
+  component: ""

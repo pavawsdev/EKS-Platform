@@ -1,0 +1,79 @@
+replicaCount: 2
+
+image:
+  repository: REPLACE_WITH_ECR_REGISTRY/eksplat-vulntracker-notify
+  tag: "initial" # CI overwrites this with a commit-sha tag on every build; never left as "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3001
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: vulntracker-notify
+
+# Fixed, not Release.Name-derived - see gitops/apps/vulntracker's values.yaml
+# for why (vulntracker/vulntracker-notify address each other by a hardcoded
+# in-cluster Service DNS name).
+nameOverride: vulntracker-notify
+
+# Non-secret config only. SERVICE_KEY comes from Vault via the agent
+# injector below.
+env:
+  PORT: "3001"
+  PYTHON_API_URL: "http://vulntracker" # in-cluster Service DNS, same namespace
+
+probes:
+  liveness:
+    path: /health
+  readiness:
+    path: /health
+
+# role/addr/secrets are set per-env (see values-<env>.yaml) - the Vault
+# Agent template body embeds that env's literal secret path.
+vault:
+  enabled: true
+  run: "node src/index.js"
+
+# No public Ingress - this service is internal-only, called only by the
+# vulntracker pod. See README on /webhooks and /notify having no auth of
+# their own; the NetworkPolicy below is the actual access control.
+ingress:
+  enabled: false
+
+# Full ingress/egress lists are set per-env (see values-<env>.yaml) since
+# the VPC CIDR excluded from egress differs per environment.
+networkPolicy:
+  enabled: true
+
+environment: dev
+
+tags:
+  project: eksplat
+  component: vulntracker-notify

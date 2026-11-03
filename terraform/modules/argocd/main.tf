@@ -51,20 +51,22 @@ resource "helm_release" "argocd" {
 # Terraform, not in any workflow), so a fresh
 # ArgoCD instance had nothing for its child
 # Applications to sync against until someone
-# applied argocd/projects/eksplat-project.yaml
-# by hand. Content is environment-agnostic
-# (sourceRepos/destinations aren't per-env), so
-# it's applied as-is via file(), not templated.
+# applied the AppProject manifest by hand.
+# One file per environment under gitops/projects/
+# (dev/stage/prod-project.yaml) so each
+# environment's RBAC can be tuned independently
+# later - content is identical today
+# (sourceRepos/destinations aren't per-env yet).
 ############################################
 resource "kubectl_manifest" "app_project" {
-  yaml_body  = file("${path.module}/../../../argocd/projects/eksplat-project.yaml")
+  yaml_body  = file("${path.module}/../../../gitops/projects/${var.environment}-project.yaml")
   depends_on = [helm_release.argocd]
 }
 
 ############################################
 # App-of-Apps bootstrap
 # Points ArgoCD at this environment's own
-# subfolder under argocd/applications/ - each
+# subfolder under gitops/environments/ - each
 # environment's ArgoCD instance only ever
 # recurses its own subfolder, so it can never
 # construct another environment's Applications
@@ -85,7 +87,7 @@ resource "kubectl_manifest" "app_of_apps" {
       source = {
         repoURL        = var.repo_url
         targetRevision = var.target_revision
-        path           = "argocd/applications/${var.environment}"
+        path           = "gitops/environments/${var.environment}"
         directory = {
           recurse = true
         }

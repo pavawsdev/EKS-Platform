@@ -1,0 +1,307 @@
+name: Reusable App CI/CD
+
+# "Build once": this is the only place any app's Docker image actually gets
+# built in this repo. It runs for dev pushes only - test -> build -> Trivy
+# scan -> push -> GitOps commit (values-dev.yaml) -> notify, ungated, fast
+# iteration (matches this repo's existing "dev doesn't need approval"
+# convention). Promotion to prod never calls this and never rebuilds - see
+# _app-promote.yml, which re-points values-prod.yaml at this exact same
+# image tag instead, so what reaches production is provably the identical
+# bytes that were already built, scanned, and running in dev - not a
+# separate build from the same source that could subtly differ (a
+# different base-image layer resolved at build time, different dependency
+# resolution, etc).
+#
+# Every service's own CI file is a thin trigger (paths filter via ci.yml's
+# `changes` job) plus a `uses:` call supplying its language, working
+# directory, ECR repo, and which Helm values file(s) to bump - one place to
+# fix a bug or add a step instead of duplicating this across every service.
+#
+# Secrets are declared explicitly (not `secrets: inherit` silently making
+# everything available) so a caller missing one fails fast with a clear
+# error instead of an unexplained downstream step failure.
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Display name - used in the Trivy artifact name, GitOps commit message, and Teams notification title"
+        required: true
+        type: string
+      working-dir:
+        description: "App directory, e.g. apps/backend"
+        required: true
+        type: string
+      ecr-repository:
+        description: "ECR repo name, e.g. eksplat-backend"
+        required: true
+        type: string
+      runtime:
+        description: "node or python"
+        required: true
+        type: string
+      runtime-version:
+        description: "e.g. 20 (node) or 3.11 (python)"
+        required: true
+        type: string
+      install-command:
+        description: "e.g. 'npm ci' / 'npm install' / 'pip install -r requirements-dev.txt'"
+        required: true
+        type: string
+      test-commands:
+        description: "Shell script run in sequence inside working-dir, after install-command"
+        required: true
+        type: string
+      helm-values-base-paths:
+        description: "Newline-separated helm/*/values paths WITHOUT the -dev.yaml suffix, e.g. gitops/apps/backend/values - this job always targets dev, appending -dev.yaml itself"
+        required: true
+        type: string
+      aws-region:
+        required: false
+        type: string
+        default: ap-south-1
+    secrets:
+      AWS_DEPLOY_ROLE_ARN:
+        required: true
+      TEAMS_WEBHOOK_URL:
+        required: false
+
+permissions:
+  id-token: write
+  contents: write
+  security-events: write
+
+jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: runtime must be node or python
+        run: |
+          if [ "${{ inputs.runtime }}" != "node" ] && [ "${{ inputs.runtime }}" != "python" ]; then
+            echo "::error::inputs.runtime must be 'node' or 'python', got '${{ inputs.runtime }}'"
+            exit 1
+          fi
+
+  test:
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - if: inputs.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.runtime-version }}
+          cache: "npm"
+          cache-dependency-path: ${{ inputs.working-dir }}/package-lock.json
+
+      - if: inputs.runtime == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.runtime-version }}
+          cache: "pip"
+          cache-dependency-path: ${{ inputs.working-dir }}/requirements-dev.txt
+
+      - run: ${{ inputs.install-command }}
+
+      # inputs.test-commands becomes the body of this step's shell script
+      # directly - the normal way a reusable workflow parameterizes a
+      # multi-line run step, not something needing eval or a parsing loop.
+      - name: Run tests
+        run: ${{ inputs.test-commands }}
+
+  build-and-push:
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: echo "image_tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        run: |
+          docker build -t ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:${{ steps.meta.outputs.image_tag }} \
+                       -t ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:latest .
+
+      # Scanning image-ref directly here made Trivy find the freshly-built
+      # tag in the local Docker daemon and scan it through the docker
+      # socket, which crashed reliably (silent death mid-scan, no output)
+      # - confirmed by a diagnostic job that scanned the same base images
+      # successfully via Trivy's remote-registry client instead. Exporting
+      # to a tar archive and scanning that sidesteps the daemon-socket
+      # path entirely.
+      - name: Save image to tarball
+        run: |
+          docker save ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:${{ steps.meta.outputs.image_tag }} \
+            -o trivy-image-input.tar
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          input: ${{ inputs.working-dir }}/trivy-image-input.tar
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+          version: v0.72.0
+          vuln-type: os,library
+          output: ${{ inputs.working-dir }}/trivy-report.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-report-${{ inputs.ecr-repository }}
+          path: ${{ inputs.working-dir }}/trivy-report.txt
+
+      - name: Push image (only after scan passes)
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:${{ steps.meta.outputs.image_tag }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:latest
+
+  update-manifest:
+    needs: build-and-push
+    # workflow_dispatch too, not just push - lets this GitOps step be
+    # re-run manually to recover from a failed/rejected push (e.g. a
+    # concurrent-push race with another workflow) without needing to
+    # contrive a new commit just to retrigger it. No environment: gate here
+    # on purpose - dev is the fast/ungated iteration environment; the real
+    # approval gate lives in _app-promote.yml, on the prod side.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Shared group name across every caller of this template on purpose: a
+    # single commit touching multiple apps/*/** paths triggers several
+    # calling workflows at once, and all their GitOps pushes target the
+    # same branch. One group stops their git commands from interleaving -
+    # paired with the explicit checkout ref below, which stops a job that
+    # waited behind this group from working off a stale pre-queue snapshot.
+    # Tradeoff: every caller's update-manifest now serializes through this
+    # one group, so N services pushed in one commit means N sequential
+    # git-push round-trips here - correct (no GitOps commit races) over
+    # fast, deliberately.
+    concurrency:
+      group: gitops-manifest-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # ref: explicit branch name, not the default (github.sha, resolved
+      # once at dispatch time). Without this, a job that waits behind the
+      # concurrency group above still checks out a stale snapshot from
+      # before it was queued - the wait alone prevents the queued jobs' git
+      # commands from interleaving, but not this staleness, which would
+      # otherwise get a job's push rejected as non-fast-forward even though
+      # it ran strictly after an earlier one finished. ref: <branch name>
+      # re-resolves to the branch's actual current tip at checkout time,
+      # not a value cached back when the workflow was originally
+      # dispatched.
+      #
+      # persist-credentials: false - otherwise checkout leaves a git
+      # credential header authenticated as the built-in GITHUB_TOKEN
+      # (contents: read only, per this job's permissions above), which
+      # takes precedence over the GitOps PAT embedded in the remote URL
+      # below and makes `git push` fail with 403 instead of using the PAT.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Fetch GitOps push token from AWS Secrets Manager
+        id: gh-token
+        run: |
+          set -euo pipefail
+          TOKEN=$(aws secretsmanager get-secret-value \
+            --secret-id eksplat-dev-github-token \
+            --query SecretString --output text)
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Bump image tag in Helm values (GitOps trigger for ArgoCD)
+        run: |
+          set -euo pipefail
+          mapfile -t BASES <<< "${{ inputs.helm-values-base-paths }}"
+          for base in "${BASES[@]}"; do
+            [ -z "$base" ] && continue
+            f="${base}-dev.yaml"
+            if [ ! -f "$f" ]; then
+              echo "::error::$f (from helm-values-base-paths) does not exist"
+              exit 1
+            fi
+            sed -i "s/^  tag: .*/  tag: \"${{ needs.build-and-push.outputs.image_tag }}\"/" "$f"
+          done
+
+      - name: Commit updated image tag
+        run: |
+          set -euo pipefail
+          # Filter blanks, not just split on newline - a trailing newline in
+          # inputs.helm-values-base-paths (the normal shape of a YAML `|`
+          # block scalar) plus the extra newline a here-string appends
+          # produces one empty element from mapfile. `git add` with an
+          # empty-string pathspec hard-fails the whole step, so this can't
+          # be skipped the way the Bump step above skips it per-iteration -
+          # it has to not be in the array `git add` receives at all.
+          mapfile -t RAW_BASES <<< "${{ inputs.helm-values-base-paths }}"
+          FILES=()
+          for base in "${RAW_BASES[@]}"; do
+            [ -z "$base" ] && continue
+            FILES+=("${base}-dev.yaml")
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ steps.gh-token.outputs.token }}@github.com/${{ github.repository }}.git"
+          git add "${FILES[@]}"
+          git commit -m "ci: bump ${{ inputs.service-name }} image to ${{ needs.build-and-push.outputs.image_tag }} (dev) [skip ci]" || echo "no changes"
+          git push
+
+  notify:
+    needs: [test, build-and-push, update-manifest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.test.result }}" "${{ needs.build-and-push.result }}" "${{ needs.update-manifest.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "${{ inputs.service-name }} CI/CD"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Environment: dev
+            Image tag: ${{ needs.build-and-push.outputs.image_tag }}
+            Triggered by: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

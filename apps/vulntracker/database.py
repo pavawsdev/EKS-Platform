@@ -1,0 +1,38 @@
+from sqlalchemy import create_engine, text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+from config import DATABASE_URL
+
+# check_same_thread is SQLite-specific (psycopg2 rejects it) - only passed
+# when actually running against the SQLite fallback used for local dev/tests.
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+
+engine = create_engine(DATABASE_URL, connect_args=_connect_args)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def search_scans_by_query(db, query: str, owner_id: int) -> list:
+    # Parameterised query (no string interpolation) prevents SQL injection; LIKE
+    # wildcards in the user input are escaped so they are treated as literals.
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    sql = text(
+        "SELECT id, title, description, severity, status, cve_id, "
+        "affected_component, owner_id, created_at FROM scan_results "
+        "WHERE owner_id = :owner_id "
+        "AND (title LIKE :pattern ESCAPE '\\' "
+        "OR description LIKE :pattern ESCAPE '\\' "
+        "OR cve_id LIKE :pattern ESCAPE '\\')"
+    )
+    result = db.execute(sql, {"pattern": pattern, "owner_id": owner_id})
+    return [dict(row._mapping) for row in result]
