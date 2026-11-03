@@ -128,6 +128,20 @@ jobs:
       - id: meta
         run: echo "image_tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
 
+      # Keyed on today's date so a cached DB is never more than ~24h stale -
+      # see security-scan.yml's dependency-scan job for the same pattern.
+      - name: Determine today's date (for Trivy DB cache key)
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-v0.72.0-${{ steps.date.outputs.date }}
+          restore-keys: |
+            trivy-db-v0.72.0-
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
