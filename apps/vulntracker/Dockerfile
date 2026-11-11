@@ -1,5 +1,11 @@
-# Base image pinned by tag
-ARG PYTHON_IMAGE=python:3.11.17-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+# Base image pinned by digest - pinning by digest means Debian's own
+# security patches for this image (apt, util-linux, krb5, etc.) never
+# arrive automatically the way a floating tag would get them. This
+# digest needs a deliberate, periodic refresh (not just when something
+# fails) - the previous pin (3.11.17-slim-bookworm from 2026-10-18) had
+# accumulated 102 OS-level CVEs by 2026-11-11, none from anything this
+# app's own code or requirements.txt controls.
+ARG PYTHON_IMAGE=python:3.11.18-slim-bookworm@sha256:e8c69d86735f6df3efa06b324694fe51f0422785f83a3bd463052636c2421944
 
 # ---- Build stage: install dependencies into an isolated virtualenv ----
 FROM ${PYTHON_IMAGE} AS builder
