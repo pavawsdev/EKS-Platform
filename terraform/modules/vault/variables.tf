@@ -65,6 +65,16 @@ variable "worker_service_account_name" {
   default = "worker"
 }
 
+variable "vulntracker_service_account_name" {
+  type    = string
+  default = "vulntracker"
+}
+
+variable "vulntracker_notify_service_account_name" {
+  type    = string
+  default = "vulntracker-notify"
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

@@ -1,0 +1,67 @@
+environment: dev
+replicaCount: 1
+autoscaling:
+  enabled: false
+image:
+  tag: "initial"
+vault:
+  enabled: true
+  role: "vulntracker-notify-dev"
+  addr: "https://vault.dev.example.internal"
+  run: "node src/index.js"
+  secrets:
+    - name: notify
+      path: "secret/data/dev/vulntracker-notify"
+      body: |
+        {{- with secret "secret/data/dev/vulntracker-notify" -}}
+        export SERVICE_KEY="{{ .Data.data.service_key }}"
+        {{- end }}
+networkPolicy:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vulntracker
+      ports:
+        - port: 3001
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+    # dispatcher.js POSTs to arbitrary user-registered webhook URLs, so this
+    # can't be scoped to specific destinations the way the egress rules
+    # above are. Allow everywhere EXCEPT the EC2 instance metadata endpoint
+    # and the VPC's own internal CIDR - a textbook SSRF vector (a
+    # registered webhook URL pointed at 169.254.169.254 or an internal
+    # service). Both 80/443 stay open since POST /webhooks doesn't itself
+    # enforce https:// at registration time.
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "169.254.169.254/32"
+              - "10.10.0.0/16"
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+tags:
+  environment: dev

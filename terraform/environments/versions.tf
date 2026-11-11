@@ -30,6 +30,10 @@ terraform {
       source  = "hashicorp/vault"
       version = "~> 4.4"
     }
+    postgresql = {
+      source  = "cyrilgdn/postgresql"
+      version = "~> 1.25"
+    }
   }
 
   # NOTE: bucket/dynamodb table must be created once, out-of-band,

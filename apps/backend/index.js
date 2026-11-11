@@ -14,7 +14,7 @@ const client = require("@prometheus-io/client");
 
 // Traces go to the ADOT collector's X-Ray-daemon-protocol receiver (see
 // terraform/modules/observability) - only set once observability.enabled
-// is turned on for this env (see helm/backend/values-<env>.yaml). With no
+// is turned on for this env (see gitops/apps/backend/values-<env>.yaml). With no
 // daemon address the SDK just fails silently to send segments, which is
 // fine for local/dev-without-observability runs.
 if (process.env.AWS_XRAY_DAEMON_ADDRESS) {

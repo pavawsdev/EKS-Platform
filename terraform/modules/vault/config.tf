@@ -82,3 +82,25 @@ resource "vault_kubernetes_auth_backend_role" "worker" {
   token_policies                   = [vault_policy.app_read[0].name]
   token_ttl                        = 3600
 }
+
+# Same precedent as worker above: own namespace/SA, same shared app_read
+# policy (secret/data/<env>/* already covers secret/data/<env>/vulntracker).
+resource "vault_kubernetes_auth_backend_role" "vulntracker" {
+  count                            = var.configure_vault ? 1 : 0
+  backend                          = vault_auth_backend.kubernetes[0].path
+  role_name                        = "vulntracker-${var.environment}"
+  bound_service_account_names      = [var.vulntracker_service_account_name]
+  bound_service_account_namespaces = ["vulntracker-${var.environment}"]
+  token_policies                   = [vault_policy.app_read[0].name]
+  token_ttl                        = 3600
+}
+
+resource "vault_kubernetes_auth_backend_role" "vulntracker_notify" {
+  count                            = var.configure_vault ? 1 : 0
+  backend                          = vault_auth_backend.kubernetes[0].path
+  role_name                        = "vulntracker-notify-${var.environment}"
+  bound_service_account_names      = [var.vulntracker_notify_service_account_name]
+  bound_service_account_namespaces = ["vulntracker-${var.environment}"]
+  token_policies                   = [vault_policy.app_read[0].name]
+  token_ttl                        = 3600
+}

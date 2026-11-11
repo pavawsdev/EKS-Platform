@@ -1,0 +1,77 @@
+environment: dev
+replicaCount: 1
+autoscaling:
+  enabled: false
+image:
+  tag: "initial"
+env:
+  PUBLIC_BASE_URL: "https://vulntracker.dev.example.internal"
+vault:
+  enabled: true
+  role: "vulntracker-dev"
+  addr: "https://vault.dev.example.internal"
+  run: "uvicorn main:app --host 0.0.0.0 --port 8000"
+  secrets:
+    - name: db
+      path: "secret/data/dev/vulntracker"
+      # Shell-sourceable DATABASE_URL - config.py reads it as a single
+      # connection-string env var, so it's assembled here rather than left
+      # as separate fields the app would have to combine itself.
+      body: |
+        {{- with secret "secret/data/dev/vulntracker" -}}
+        export DATABASE_URL="postgresql://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:{{ .Data.data.port }}/{{ .Data.data.dbname }}"
+        {{- end }}
+    - name: jwt
+      path: "secret/data/dev/vulntracker"
+      # Plain file, not shell-sourced - config.py's JWT_SECRET_KEY_FILE
+      # reads this path directly (the app's own original design already
+      # expected a mounted file here, not an env var).
+      consumeAs: "env:JWT_SECRET_KEY_FILE"
+      body: |
+        {{- with secret "secret/data/dev/vulntracker" -}}{{ .Data.data.jwt_secret_key }}{{- end }}
+ingress:
+  enabled: true
+  host: "vulntracker.dev.example.internal"
+networkPolicy:
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: "10.10.0.0/16"
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vulntracker-notify
+      ports:
+        - port: 3001
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: "10.10.0.0/16"
+      ports:
+        - port: 5432
+          protocol: TCP
+tags:
+  environment: dev

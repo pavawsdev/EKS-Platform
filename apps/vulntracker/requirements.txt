@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.24.0
+sqlalchemy==2.0.36
+# No fixed version exists yet for CVE-2026-85394 as of 3.5.0 (the latest
+# release) - not exploitable here regardless (see auth.py: this app only
+# ever uses symmetric HS256 with one SECRET_KEY, explicitly restricted via
+# algorithms=["HS256"] on decode; the CVE requires an attacker-held public
+# key, and no asymmetric keypair exists anywhere in this app's JWT flow).
+# Dismissed in GitHub code scanning as "Mitigated" - revisit if upstream
+# ever ships a fix, or consider migrating to PyJWT.
+python-jose==3.4.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.31
+cryptography==50.0.0
+bcrypt==4.0.1
+httpx==0.25.2
+psycopg2-binary==2.9.10
