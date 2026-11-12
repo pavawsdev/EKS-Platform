@@ -262,7 +262,20 @@ jobs:
   # names exactly one.
   tf-dev:
     needs: [changes, security]
-    if: needs.changes.outputs.tf_dev == 'true' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
+    # On workflow_dispatch, ONLY the chosen environment's job may run - the
+    # changes-based condition must not independently fire one too. Each half
+    # of this OR is only ever true for one event type, by construction: the
+    # left half requires event != workflow_dispatch, the right half requires
+    # event == workflow_dispatch, so they can never both decide the same run.
+    # (A bug here once dispatched an "apply" for dev and ALSO silently ran
+    # tf-stage/tf-prod because the old `tf_x == 'true' || dispatch-match`
+    # form let the changes-based half fire on its own during a dispatch,
+    # with no dependency on which environment was actually chosen - that is
+    # exactly how a stage apply got triggered by a dev-only dispatch and
+    # left live, billing AWS resources behind after it failed partway
+    # through. Never rewrite this back to a plain `||` of two independent
+    # conditions.)
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_dev == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
     uses: ./.github/workflows/_tf.yml
     secrets:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -275,7 +288,8 @@ jobs:
 
   tf-stage:
     needs: [changes, security]
-    if: needs.changes.outputs.tf_stage == 'true' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'stage')
+    # See tf-dev's comment above - same fix, same reason.
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_stage == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'stage')
     uses: ./.github/workflows/_tf.yml
     secrets:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -288,7 +302,8 @@ jobs:
 
   tf-prod:
     needs: [changes, security]
-    if: needs.changes.outputs.tf_prod == 'true' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod')
+    # See tf-dev's comment above - same fix, same reason.
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_prod == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod')
     uses: ./.github/workflows/_tf.yml
     secrets:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
