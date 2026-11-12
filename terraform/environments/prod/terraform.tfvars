@@ -5,7 +5,7 @@ cost_center  = "engineering"
 domain_name  = "prod.example.internal"
 repo_url     = "https://github.com/pavawsdev/EKS-Platform.git"
 
-allowed_ssh_cidrs = ["203.0.113.0/24"] # replace with your office/VPN CIDR
+allowed_ssh_cidrs = ["49.37.177.220/32"] # home IP - residential ISPs are usually dynamic, update this if it changes
 
 environment_config = {
   prod = {

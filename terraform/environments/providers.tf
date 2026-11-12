@@ -1,6 +1,20 @@
 provider "aws" {
   region = var.aws_region
 
+  # Hub-and-spoke cross-account isolation: dev applies directly as CI's own
+  # credentials (cross_account_role_arn left empty, hub account). Stage/prod
+  # hop into their own, separate AWS account via this role - see
+  # cross_account_role_arn's description in variables.tf. State-backend auth
+  # (S3/DynamoDB) is unaffected by this block entirely; only resource
+  # creation goes through this hop.
+  dynamic "assume_role" {
+    for_each = var.cross_account_role_arn != "" ? [var.cross_account_role_arn] : []
+    content {
+      role_arn     = assume_role.value
+      session_name = "eksplat-terraform-${local.environment}"
+    }
+  }
+
   default_tags {
     tags = local.common_tags
   }

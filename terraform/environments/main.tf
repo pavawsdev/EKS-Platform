@@ -239,6 +239,33 @@ resource "aws_ecr_lifecycle_policy" "this" {
   })
 }
 
+# Cross-account pull policy so stage/prod's own EKS node role (in their own
+# AWS accounts) can pull images from this (dev/hub) account's ECR without
+# any image copy - "build once, pull everywhere". Principal is each node
+# role's exact ARN (name_prefix convention: "${project_name}-${environment}-
+# eks-node-role"), not the whole account root, so this stays least-privilege.
+# No-op (empty list) until ecr_pull_role_arns is populated with real ARNs.
+resource "aws_ecr_repository_policy" "cross_account_pull" {
+  for_each   = local.environment == "dev" && length(var.ecr_pull_role_arns) > 0 ? aws_ecr_repository.this : {}
+  repository = each.value.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "CrossAccountNodePull"
+        Effect    = "Allow"
+        Principal = { AWS = var.ecr_pull_role_arns }
+        Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:BatchCheckLayerAvailability",
+        ]
+      }
+    ]
+  })
+}
+
 ############################################
 # GitHub PAT used by CI for GitOps commits -
 # stored in AWS Secrets Manager (per the request

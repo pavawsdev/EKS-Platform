@@ -19,6 +19,25 @@ variable "cost_center" {
   default = "engineering"
 }
 
+# Role to assume in this workspace's target AWS account before creating any
+# resources. Empty means apply directly as CI's own credentials (dev only -
+# dev stays in the hub/CI account, 887047732645). Stage and prod set this to
+# the eksplat-ci-deploy role ARN in their own, separate AWS account - see
+# providers.tf for how this is consumed.
+variable "cross_account_role_arn" {
+  type    = string
+  default = ""
+}
+
+# IAM role ARNs (in other AWS accounts) allowed to pull from this (dev/hub)
+# account's ECR repositories - the EKS node roles of the stage/prod accounts.
+# Only meaningful in the dev workspace, where the ECR repos actually live.
+# Empty by default - safe no-op until the target accounts/roles exist.
+variable "ecr_pull_role_arns" {
+  type    = list(string)
+  default = []
+}
+
 variable "domain_name" {
   description = "Placeholder domain (swap for a real Route53-hosted domain later)"
   type        = string
