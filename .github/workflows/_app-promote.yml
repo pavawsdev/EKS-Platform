@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: ap-south-1
+      trivyignore-path:
+        description: "Optional path to a .trivyignore file (e.g. apps/vulntracker/.trivyignore) - documented, per-CVE risk acceptances for the re-scan. Left empty for services that don't need one."
+        required: false
+        type: string
+        default: ""
     secrets:
       AWS_DEPLOY_ROLE_ARN:
         required: true
@@ -86,6 +91,11 @@ jobs:
     needs: read-tag
     runs-on: ubuntu-latest
     steps:
+      # Needed so inputs.trivyignore-path (e.g. apps/vulntracker/.trivyignore)
+      # actually exists on disk for the Trivy step below - this job has no
+      # other reason to check out the repo (it pulls the image from ECR).
+      - uses: actions/checkout@v4
+
       # Keyed on today's date so a cached DB is never more than ~24h stale -
       # see security-scan.yml's dependency-scan job for the same pattern.
       - name: Determine today's date (for Trivy DB cache key)
@@ -128,6 +138,7 @@ jobs:
           version: v0.72.0
           vuln-type: os,library
           output: trivy-rescan-report.txt
+          trivyignores: ${{ inputs.trivyignore-path }}
 
       - uses: actions/upload-artifact@v4
         if: always()

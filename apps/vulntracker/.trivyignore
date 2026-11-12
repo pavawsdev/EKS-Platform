@@ -1,0 +1,29 @@
+# Each entry here is a documented, deliberate risk acceptance - not a
+# blanket suppression. See the matching GitHub code-scanning dismissal for
+# the same reasoning (dismissing there only affects the Security tab; this
+# file is what actually keeps `_app-ci.yml`'s and `_app-promote.yml`'s
+# Trivy image-scan step (exit-code=1 on CRITICAL/HIGH) from failing on these
+# specific, already-triaged findings).
+
+# python-jose through 3.5.0 (the latest release) has no fix for this
+# algorithm-confusion issue. Not exploitable here: this app only ever uses
+# symmetric HS256 with one SECRET_KEY (see auth.py), and the CVE requires
+# an attacker-held *public* key passed as an HMAC secret - no asymmetric
+# keypair exists anywhere in this app's JWT flow. Revisit if upstream ever
+# ships a fix, or consider migrating to PyJWT.
+CVE-2026-85394
+
+# python-ecdsa has no fix for the Minerva timing-attack class of issue -
+# upstream has stated this is a design limitation, not a patchable bug.
+# Transitive dependency of python-jose; this app doesn't use ECDSA/ES256
+# anywhere (HS256 only, see auth.py).
+CVE-2024-23342
+
+# starlette CVEs below require bumping fastapi (currently 0.115.6, which
+# hard-pins starlette<0.42.0) to a current release - a real, separate,
+# tested change, not something to rush in alongside unrelated fixes.
+# Tracked as a follow-up; ignored here deliberately in the meantime, not
+# forgotten.
+CVE-2025-62727
+CVE-2026-48818
+CVE-2026-54283

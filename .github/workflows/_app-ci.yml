@@ -60,6 +60,11 @@ on:
         required: false
         type: string
         default: ap-south-1
+      trivyignore-path:
+        description: "Optional path to a .trivyignore file (e.g. apps/vulntracker/.trivyignore) - documented, per-CVE risk acceptances for the image scan. Left empty for services that don't need one."
+        required: false
+        type: string
+        default: ""
     secrets:
       AWS_DEPLOY_ROLE_ARN:
         required: true
@@ -179,6 +184,7 @@ jobs:
           version: v0.72.0
           vuln-type: os,library
           output: ${{ inputs.working-dir }}/trivy-report.txt
+          trivyignores: ${{ inputs.trivyignore-path }}
 
       - uses: actions/upload-artifact@v4
         if: always()
