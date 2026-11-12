@@ -37,3 +37,15 @@ CVE-2026-54283
 # codepath only runs during `pip install`, at build time, from this
 # repo's own trusted requirements.txt, never from an untrusted archive.
 CVE-2026-23949
+
+# wheel: same situation as jaraco.context above, for the *vendored* copy
+# only - there are two separate setuptools installations in this image
+# (the venv's own, and the base image's system Python under
+# usr/local/lib/...), each bundling its own old wheel-0.45.1 inside its
+# own setuptools/_vendor/ directory. Pinning wheel==0.48.0 in
+# requirements.txt already fixed the real, top-level wheel package (now 0
+# findings there) - it just can't reach into setuptools' internal vendored
+# copies. Not exploitable at runtime for the same reason as jaraco.context:
+# this is setuptools' own build-time tooling, never invoked after the
+# image is built.
+CVE-2026-24049
