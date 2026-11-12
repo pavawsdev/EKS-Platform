@@ -8,10 +8,16 @@ sqlalchemy==2.0.36
 # key, and no asymmetric keypair exists anywhere in this app's JWT flow).
 # Dismissed in GitHub code scanning as "Mitigated" - revisit if upstream
 # ever ships a fix, or consider migrating to PyJWT.
-python-jose==3.4.0
+python-jose==3.5.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.31
 cryptography==50.0.0
 bcrypt==4.0.1
 httpx==0.25.2
 psycopg2-binary==2.9.10
+# Transitive via python-jose's crypto backend - pinned explicitly since
+# nothing else in requirements.txt forces a recent enough version.
+pyasn1==0.6.5
+# Transitive build-time tool (not imported by the app) - pinned explicitly
+# for the same reason.
+wheel==0.48.0
