@@ -1,6 +1,6 @@
 environment: dev
 image:
-  tag: "64ff3242"
+  tag: "a2d09d75"
 serviceAccount:
   irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-dev-worker-irsa"
 env:
