@@ -177,10 +177,24 @@ module "vault" {
 # they're only created from the dev workspace to avoid a
 # "repository already exists" collision if the prod
 # workspace is ever applied too.
+#
+# backend/frontend stay on their existing customer-managed KMS key -
+# changing a repo's encryption_type isn't an in-place update in ECR's API,
+# it forces Terraform to destroy and recreate the whole repository, which
+# would wipe their real, already-pushed images. vulntracker/vulntracker-
+# notify don't exist yet (nothing to lose), so they go straight to AES256
+# (AWS-managed, free) instead of paying for a dedicated KMS key they don't
+# need. Revisit backend/frontend's KMS key during a deliberate migration
+# window if the ~$1/month ever matters enough to accept the brief
+# empty-repo gap while CI repopulates them.
 ############################################
+locals {
+  ecr_kms_repos = toset(["backend", "frontend"])
+}
+
 resource "aws_kms_key" "ecr" {
   count                   = local.environment == "dev" ? 1 : 0
-  description             = "KMS key for ${var.project_name} ECR repositories"
+  description             = "KMS key for ${var.project_name} ECR repositories (backend/frontend only - see note above)"
   deletion_window_in_days = 30
   enable_key_rotation     = true
   tags                    = local.common_tags
@@ -211,8 +225,8 @@ resource "aws_ecr_repository" "this" {
   }
 
   encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.ecr[0].arn
+    encryption_type = contains(local.ecr_kms_repos, each.key) ? "KMS" : "AES256"
+    kms_key         = contains(local.ecr_kms_repos, each.key) ? aws_kms_key.ecr[0].arn : null
   }
 
   tags = local.common_tags
