@@ -27,3 +27,13 @@ CVE-2024-23342
 CVE-2025-62727
 CVE-2026-48818
 CVE-2026-54283
+
+# jaraco.context (path traversal via malicious tar archives) is vendored
+# inside setuptools' own _vendor/ directory - it's setuptools' internal
+# build-time tooling, not a package this app imports or that pip can bump
+# independently (there's no top-level "jaraco.context" entry in
+# requirements.txt to pin). Not exploitable at runtime: this container
+# never extracts an sdist/tar archive after the image is built - that
+# codepath only runs during `pip install`, at build time, from this
+# repo's own trusted requirements.txt, never from an untrusted archive.
+CVE-2026-23949

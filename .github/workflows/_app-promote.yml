@@ -139,6 +139,8 @@ jobs:
           vuln-type: os,library
           output: trivy-rescan-report.txt
           trivyignores: ${{ inputs.trivyignore-path }}
+          # See _app-ci.yml's "Scan image with Trivy" step for why.
+          ignore-unfixed: true
 
       - uses: actions/upload-artifact@v4
         if: always()

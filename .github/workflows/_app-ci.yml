@@ -185,6 +185,12 @@ jobs:
           vuln-type: os,library
           output: ${{ inputs.working-dir }}/trivy-report.txt
           trivyignores: ${{ inputs.trivyignore-path }}
+          # Never block on a finding with literally no fix available from
+          # anyone yet (common for base-image OS packages, e.g. krb5/
+          # util-linux CVEs Debian hasn't backported a patch for) - this
+          # still fails on anything that DOES have a real fix, it only
+          # drops the ones no rebuild or bump could ever resolve today.
+          ignore-unfixed: true
 
       - uses: actions/upload-artifact@v4
         if: always()
