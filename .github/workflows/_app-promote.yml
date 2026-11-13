@@ -1,0 +1,244 @@
+name: Promote App to Production
+
+# No build step, ever - this is the other half of "build once": it re-points
+# helm/<service>/values-prod.yaml at the exact image tag already sitting in
+# values-dev.yaml (which carries over unchanged when dev merges into main),
+# re-scans that SAME already-pushed image by pulling it from ECR (to catch
+# anything newly disclosed since the original build, without rebuilding),
+# then - only once a human approves the "prod" GitHub Environment gate -
+# commits the promotion. What reaches production is provably the identical
+# bytes that were already built, scanned, and running in dev.
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Display name - used in the GitOps commit message and Teams notification title"
+        required: true
+        type: string
+      ecr-repository:
+        description: "ECR repo name, e.g. eksplat-backend - used only to re-pull the existing image for the re-scan, never to push"
+        required: true
+        type: string
+      helm-values-base-paths:
+        description: "Newline-separated helm/*/values paths WITHOUT suffix, e.g. gitops/apps/backend/values - this job reads the tag from <base>-dev.yaml and writes it into <base>-prod.yaml"
+        required: true
+        type: string
+      aws-region:
+        required: false
+        type: string
+        default: ap-south-1
+      trivyignore-path:
+        description: "Optional path to a .trivyignore file (e.g. apps/vulntracker/.trivyignore) - documented, per-CVE risk acceptances for the re-scan. Left empty for services that don't need one."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      AWS_DEPLOY_ROLE_ARN:
+        required: true
+      TEAMS_WEBHOOK_URL:
+        required: false
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  # Reads the tag before the approval gate, so the reviewer's own Teams
+  # notification (and the GitHub UI) can show exactly which already-built
+  # image is about to be promoted, not just that "something" was requested.
+  read-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.read.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          set -euo pipefail
+          mapfile -t BASES <<< "${{ inputs.helm-values-base-paths }}"
+          FIRST_BASE=""
+          for base in "${BASES[@]}"; do
+            [ -z "$base" ] && continue
+            FIRST_BASE="$base"
+            break
+          done
+          if [ -z "$FIRST_BASE" ]; then
+            echo "::error::helm-values-base-paths is empty"
+            exit 1
+          fi
+          DEV_FILE="${FIRST_BASE}-dev.yaml"
+          if [ ! -f "$DEV_FILE" ]; then
+            echo "::error::$DEV_FILE does not exist - nothing to promote"
+            exit 1
+          fi
+          # Plain POSIX sed, not grep -P - PCRE support isn't guaranteed on
+          # every grep build (and failed outright in local testing here on
+          # a locale issue), while this BRE pattern has no such dependency.
+          TAG=$(sed -n 's/^[[:space:]]*tag:[[:space:]]*"\([^"]*\)".*/\1/p' "$DEV_FILE" | head -1)
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not read a tag out of $DEV_FILE"
+            exit 1
+          fi
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # Re-scans the already-built, already-dev-validated image by pulling it
+  # from ECR by tag - not a rebuild, just a fresh Trivy pass in case a CVE
+  # was disclosed in the window between the original dev build and this
+  # promotion. Runs before the approval gate so a newly-vulnerable image
+  # never even reaches the reviewer as a choice to approve.
+  rescan:
+    needs: read-tag
+    runs-on: ubuntu-latest
+    steps:
+      # Needed so inputs.trivyignore-path (e.g. apps/vulntracker/.trivyignore)
+      # actually exists on disk for the Trivy step below - this job has no
+      # other reason to check out the repo (it pulls the image from ECR).
+      - uses: actions/checkout@v4
+
+      # Keyed on today's date so a cached DB is never more than ~24h stale -
+      # see security-scan.yml's dependency-scan job for the same pattern.
+      - name: Determine today's date (for Trivy DB cache key)
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-v0.72.0-${{ steps.date.outputs.date }}
+          restore-keys: |
+            trivy-db-v0.72.0-
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull existing image
+        run: docker pull ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:${{ needs.read-tag.outputs.image_tag }}
+
+      - name: Save image to tarball
+        run: |
+          docker save ${{ steps.ecr-login.outputs.registry }}/${{ inputs.ecr-repository }}:${{ needs.read-tag.outputs.image_tag }} \
+            -o trivy-image-input.tar
+
+      - name: Re-scan with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          input: trivy-image-input.tar
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+          version: v0.72.0
+          vuln-type: os,library
+          output: trivy-rescan-report.txt
+          trivyignores: ${{ inputs.trivyignore-path }}
+          # See _app-ci.yml's "Scan image with Trivy" step for why.
+          ignore-unfixed: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-rescan-${{ inputs.ecr-repository }}
+          path: trivy-rescan-report.txt
+
+  # environment: prod - the actual production approval gate (repo Settings >
+  # Environments, required-reviewer rule) - the same one Terraform's
+  # tf-apply/tf-destroy already gate on. Nothing below this line runs until
+  # a human approves, and by this point the reviewer already knows (from
+  # read-tag's output surfaced in the pending-deployment UI, and from
+  # rescan having already passed) exactly what they're approving.
+  promote:
+    needs: [read-tag, rescan]
+    environment: prod
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitops-manifest-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Fetch GitOps push token from AWS Secrets Manager
+        id: gh-token
+        run: |
+          set -euo pipefail
+          TOKEN=$(aws secretsmanager get-secret-value \
+            --secret-id eksplat-prod-github-token \
+            --query SecretString --output text)
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Point prod's Helm values at the already-built image tag
+        run: |
+          set -euo pipefail
+          mapfile -t BASES <<< "${{ inputs.helm-values-base-paths }}"
+          for base in "${BASES[@]}"; do
+            [ -z "$base" ] && continue
+            f="${base}-prod.yaml"
+            if [ ! -f "$f" ]; then
+              echo "::error::$f (from helm-values-base-paths) does not exist"
+              exit 1
+            fi
+            sed -i "s/^  tag: .*/  tag: \"${{ needs.read-tag.outputs.image_tag }}\"/" "$f"
+          done
+
+      - name: Commit promoted image tag
+        run: |
+          set -euo pipefail
+          mapfile -t RAW_BASES <<< "${{ inputs.helm-values-base-paths }}"
+          FILES=()
+          for base in "${RAW_BASES[@]}"; do
+            [ -z "$base" ] && continue
+            FILES+=("${base}-prod.yaml")
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ steps.gh-token.outputs.token }}@github.com/${{ github.repository }}.git"
+          git add "${FILES[@]}"
+          git commit -m "ci: promote ${{ inputs.service-name }} image ${{ needs.read-tag.outputs.image_tag }} to prod [skip ci]" || echo "no changes"
+          git push
+
+  notify:
+    needs: [read-tag, rescan, promote]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine overall status
+        id: status
+        run: |
+          for r in "${{ needs.read-tag.result }}" "${{ needs.rescan.result }}" "${{ needs.promote.result }}"; do
+            if [ "$r" == "failure" ]; then echo "status=failure" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$r" == "cancelled" ]; then echo "status=cancelled" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/notify-teams
+        with:
+          webhook-url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: "${{ inputs.service-name }} - Promote to Prod"
+          status: ${{ steps.status.outputs.status }}
+          details: |
+            Image tag: ${{ needs.read-tag.outputs.image_tag }}
+            Triggered by: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

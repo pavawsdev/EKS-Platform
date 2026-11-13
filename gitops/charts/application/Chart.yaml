@@ -1,0 +1,6 @@
+apiVersion: v2
+name: application
+description: Generic chart for request-driven services (backend, frontend, vulntracker, vulntracker-notify) - worker stays its own chart, see gitops/apps/worker
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

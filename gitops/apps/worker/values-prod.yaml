@@ -1,0 +1,24 @@
+environment: prod
+image:
+  tag: "initial"
+serviceAccount:
+  irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-prod-worker-irsa"
+env:
+  AWS_REGION: "ap-south-1"
+  SQS_QUEUE_URL: "https://sqs.ap-south-1.amazonaws.com/887047732645/eksplat-prod-jobs"
+vault:
+  enabled: true
+  role: "worker-prod"
+  addr: "https://vault.prod.example.internal"
+  dbSecretPath: "secret/data/prod/db"
+keda:
+  awsRegion: "ap-south-1"
+  cronTimezone: "Asia/Kolkata"
+  cronStart: "0 9 * * *"
+  cronEnd: "0 18 * * *"
+cronjob:
+  # Placeholder cadence - dev's "*/5 * * * *" was tuned for demo visibility,
+  # not real traffic. Revisit against actual job volume before this matters.
+  schedule: "0 * * * *"
+tags:
+  environment: prod

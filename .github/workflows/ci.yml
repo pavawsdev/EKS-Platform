@@ -1,0 +1,317 @@
+name: CI/CD
+
+# Single orchestrator for the whole pipeline: detect what changed, run the
+# full security gate exactly once, then - only if that gate passes - build
+# whichever apps changed and/or plan/apply/destroy Terraform. This replaced
+# five previously-independent workflow files (backend-ci.yml, frontend-ci.yml,
+# vulntracker-ci.yml, vulntracker-notify-ci.yml, terraform.yml), each of
+# which triggered security-scan.yml would otherwise need to also trigger on
+# its own, since `needs:` cannot create a dependency between two separately
+# triggered workflow runs - only between jobs inside the same run. Folding
+# everything into one run is what makes "nothing builds or deploys until
+# security passes" a real, enforced gate rather than a documentation claim.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to target for Terraform (ignored for app builds)"
+        required: true
+        type: choice
+        options: [dev, stage, prod]
+      action:
+        description: "Terraform action (ignored for app builds)"
+        required: true
+        type: choice
+        options: [plan, apply, destroy]
+
+permissions:
+  id-token: write
+  contents: write
+  security-events: write
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.7.5"
+  TF_WORKING_DIR: terraform/environments
+
+jobs:
+  # Detects which parts of the repo changed, so downstream jobs only run
+  # what's relevant. On workflow_dispatch there's no meaningful diff to take
+  # (a manual dispatch isn't tied to a specific commit range), so every job
+  # below also accepts `github.event_name == 'workflow_dispatch'` in its own
+  # `if:` as an unconditional "run anyway" rather than depending on this
+  # filter's behavior in that case.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      vulntracker: ${{ steps.filter.outputs.vulntracker }}
+      vulntracker_notify: ${{ steps.filter.outputs.vulntracker_notify }}
+      tf_dev: ${{ steps.filter.outputs.tf_dev }}
+      tf_stage: ${{ steps.filter.outputs.tf_stage }}
+      tf_prod: ${{ steps.filter.outputs.tf_prod }}
+      gitops_apps: ${{ steps.filter.outputs.gitops_apps }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # tf_<env> each match their own environment's tfvars/subfolder
+          # PLUS the shared root config and modules - a change to a module
+          # or environments/main.tf affects every environment's plan, so it
+          # has to mark all three, not just whichever env dir happens to
+          # also be touched in the same commit.
+          filters: |
+            backend:
+              - 'apps/backend/**'
+            frontend:
+              - 'apps/frontend/**'
+            vulntracker:
+              - 'apps/vulntracker/**'
+            vulntracker_notify:
+              - 'apps/vulntracker-notify/**'
+            tf_dev:
+              - 'terraform/environments/dev/**'
+              - 'terraform/environments/*.tf'
+              - 'terraform/modules/**'
+            tf_stage:
+              - 'terraform/environments/stage/**'
+              - 'terraform/environments/*.tf'
+              - 'terraform/modules/**'
+            tf_prod:
+              - 'terraform/environments/prod/**'
+              - 'terraform/environments/*.tf'
+              - 'terraform/modules/**'
+            gitops_apps:
+              - 'gitops/apps/**'
+
+  # The security gate - runs exactly once per workflow run, regardless of
+  # how many of the jobs below end up running. security-scan.yml itself
+  # decides internally which of its own checks do real work (gitleaks/
+  # CodeQL/dependency-scan always do; tfsec/checkov/kube-linter self-gate on
+  # the same terraform/helm change detection, at the step level so the job
+  # still reports success - see that file's own comments for why).
+  security:
+    needs: changes
+    uses: ./.github/workflows/security-scan.yml
+    secrets:
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+  # ---- Dev: build once, push, deploy (ungated) ----
+  # Explicitly excludes main - a push to main never builds anything (see
+  # the promote-* jobs below), it only promotes what dev already built.
+  ci-backend:
+    needs: [changes, security]
+    if: github.ref_name != 'main' && (needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-ci.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "Backend"
+      working-dir: apps/backend
+      ecr-repository: eksplat-backend
+      runtime: node
+      runtime-version: "20"
+      install-command: "npm ci"
+      test-commands: |
+        npm run lint --if-present
+        npm test -- --passWithNoTests
+      helm-values-base-paths: |
+        gitops/apps/backend/values
+        gitops/apps/worker/values
+
+  ci-frontend:
+    needs: [changes, security]
+    if: github.ref_name != 'main' && (needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-ci.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "Frontend"
+      working-dir: apps/frontend
+      ecr-repository: eksplat-frontend
+      runtime: node
+      runtime-version: "20"
+      # npm ci deliberately not used here: react-scripts (Create React App)
+      # is unmaintained and its transitive dependency tree no longer
+      # resolves consistently enough for npm ci's strict lockfile check
+      # against a current npm registry. npm install is lenient about that
+      # version drift and just works - acceptable tradeoff for this app.
+      install-command: "npm install"
+      test-commands: |
+        npm run lint --if-present
+        npm test -- --watchAll=false --passWithNoTests
+        npm run build
+      helm-values-base-paths: |
+        gitops/apps/frontend/values
+
+  ci-vulntracker:
+    needs: [changes, security]
+    if: github.ref_name != 'main' && (needs.changes.outputs.vulntracker == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-ci.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "VulnTracker API"
+      working-dir: apps/vulntracker
+      ecr-repository: eksplat-vulntracker
+      runtime: python
+      runtime-version: "3.11"
+      install-command: "pip install -r requirements-dev.txt"
+      # JWT_SECRET_KEY is set by tests/conftest.py itself (a throwaway
+      # value) before any app module is imported - config.py would
+      # otherwise refuse to start, same as in production.
+      test-commands: |
+        pytest tests/ -v
+      helm-values-base-paths: |
+        gitops/apps/vulntracker/values
+      trivyignore-path: apps/vulntracker/.trivyignore
+
+  ci-vulntracker-notify:
+    needs: [changes, security]
+    if: github.ref_name != 'main' && (needs.changes.outputs.vulntracker_notify == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-ci.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "VulnTracker Notify"
+      working-dir: apps/vulntracker-notify
+      ecr-repository: eksplat-vulntracker-notify
+      runtime: node
+      runtime-version: "20"
+      install-command: "npm ci"
+      test-commands: |
+        npm test
+      helm-values-base-paths: |
+        gitops/apps/vulntracker-notify/values
+
+  # ---- Prod: promote the exact image dev already built - never rebuilds ----
+  # Only meaningful on main (a dev->main merge), but also accepts
+  # workflow_dispatch for manual retry, matching the same "recover without
+  # a new commit" convention _app-ci.yml's update-manifest already uses.
+  promote-backend:
+    needs: [changes, security]
+    if: github.ref_name == 'main' && (needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-promote.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "Backend"
+      ecr-repository: eksplat-backend
+      helm-values-base-paths: |
+        gitops/apps/backend/values
+        gitops/apps/worker/values
+
+  promote-frontend:
+    needs: [changes, security]
+    if: github.ref_name == 'main' && (needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-promote.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "Frontend"
+      ecr-repository: eksplat-frontend
+      helm-values-base-paths: |
+        gitops/apps/frontend/values
+
+  promote-vulntracker:
+    needs: [changes, security]
+    if: github.ref_name == 'main' && (needs.changes.outputs.vulntracker == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-promote.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "VulnTracker API"
+      ecr-repository: eksplat-vulntracker
+      helm-values-base-paths: |
+        gitops/apps/vulntracker/values
+      trivyignore-path: apps/vulntracker/.trivyignore
+
+  promote-vulntracker-notify:
+    needs: [changes, security]
+    if: github.ref_name == 'main' && (needs.changes.outputs.vulntracker_notify == 'true' || github.event_name == 'workflow_dispatch')
+    uses: ./.github/workflows/_app-promote.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      service-name: "VulnTracker Notify"
+      ecr-repository: eksplat-vulntracker-notify
+      helm-values-base-paths: |
+        gitops/apps/vulntracker-notify/values
+
+  # ---- Terraform ----
+  # One calling job per environment, parameterized via _tf.yml rather than a
+  # single branch-inferred determine-env job - environment is a directory
+  # under terraform/environments/, not a branch, so "which env changed" can
+  # legitimately be any subset of {dev, stage, prod} in a single push (e.g.
+  # a shared module edit marks all three; a dev/terraform.tfvars-only edit
+  # marks just dev). On workflow_dispatch, only the explicitly chosen
+  # environment runs - not all three - since the dispatch input already
+  # names exactly one.
+  tf-dev:
+    needs: [changes, security]
+    # On workflow_dispatch, ONLY the chosen environment's job may run - the
+    # changes-based condition must not independently fire one too. Each half
+    # of this OR is only ever true for one event type, by construction: the
+    # left half requires event != workflow_dispatch, the right half requires
+    # event == workflow_dispatch, so they can never both decide the same run.
+    # (A bug here once dispatched an "apply" for dev and ALSO silently ran
+    # tf-stage/tf-prod because the old `tf_x == 'true' || dispatch-match`
+    # form let the changes-based half fire on its own during a dispatch,
+    # with no dependency on which environment was actually chosen - that is
+    # exactly how a stage apply got triggered by a dev-only dispatch and
+    # left live, billing AWS resources behind after it failed partway
+    # through. Never rewrite this back to a plain `||` of two independent
+    # conditions.)
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_dev == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev')
+    uses: ./.github/workflows/_tf.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      GITOPS_GITHUB_PAT: ${{ secrets.GITOPS_GITHUB_PAT }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      environment: dev
+      action: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'plan' }}
+
+  tf-stage:
+    needs: [changes, security]
+    # See tf-dev's comment above - same fix, same reason.
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_stage == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'stage')
+    uses: ./.github/workflows/_tf.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      GITOPS_GITHUB_PAT: ${{ secrets.GITOPS_GITHUB_PAT }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      environment: stage
+      action: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'plan' }}
+
+  tf-prod:
+    needs: [changes, security]
+    # See tf-dev's comment above - same fix, same reason.
+    if: (github.event_name != 'workflow_dispatch' && needs.changes.outputs.tf_prod == 'true') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod')
+    uses: ./.github/workflows/_tf.yml
+    secrets:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      GITOPS_GITHUB_PAT: ${{ secrets.GITOPS_GITHUB_PAT }}
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    with:
+      environment: prod
+      action: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'plan' }}

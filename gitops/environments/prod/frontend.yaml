@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: eksplat
+  source:
+    repoURL: https://github.com/pavawsdev/EKS-Platform.git
+    targetRevision: main
+    path: gitops/charts/application
+    helm:
+      valueFiles:
+        - /gitops/apps/frontend/values.yaml
+        - /gitops/apps/frontend/values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: frontend-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

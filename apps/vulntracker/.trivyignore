@@ -1,0 +1,51 @@
+# Each entry here is a documented, deliberate risk acceptance - not a
+# blanket suppression. See the matching GitHub code-scanning dismissal for
+# the same reasoning (dismissing there only affects the Security tab; this
+# file is what actually keeps `_app-ci.yml`'s and `_app-promote.yml`'s
+# Trivy image-scan step (exit-code=1 on CRITICAL/HIGH) from failing on these
+# specific, already-triaged findings).
+
+# python-jose through 3.5.0 (the latest release) has no fix for this
+# algorithm-confusion issue. Not exploitable here: this app only ever uses
+# symmetric HS256 with one SECRET_KEY (see auth.py), and the CVE requires
+# an attacker-held *public* key passed as an HMAC secret - no asymmetric
+# keypair exists anywhere in this app's JWT flow. Revisit if upstream ever
+# ships a fix, or consider migrating to PyJWT.
+CVE-2026-85394
+
+# python-ecdsa has no fix for the Minerva timing-attack class of issue -
+# upstream has stated this is a design limitation, not a patchable bug.
+# Transitive dependency of python-jose; this app doesn't use ECDSA/ES256
+# anywhere (HS256 only, see auth.py).
+CVE-2024-23342
+
+# starlette CVEs below require bumping fastapi (currently 0.115.6, which
+# hard-pins starlette<0.42.0) to a current release - a real, separate,
+# tested change, not something to rush in alongside unrelated fixes.
+# Tracked as a follow-up; ignored here deliberately in the meantime, not
+# forgotten.
+CVE-2025-62727
+CVE-2026-48818
+CVE-2026-54283
+
+# jaraco.context (path traversal via malicious tar archives) is vendored
+# inside setuptools' own _vendor/ directory - it's setuptools' internal
+# build-time tooling, not a package this app imports or that pip can bump
+# independently (there's no top-level "jaraco.context" entry in
+# requirements.txt to pin). Not exploitable at runtime: this container
+# never extracts an sdist/tar archive after the image is built - that
+# codepath only runs during `pip install`, at build time, from this
+# repo's own trusted requirements.txt, never from an untrusted archive.
+CVE-2026-23949
+
+# wheel: same situation as jaraco.context above, for the *vendored* copy
+# only - there are two separate setuptools installations in this image
+# (the venv's own, and the base image's system Python under
+# usr/local/lib/...), each bundling its own old wheel-0.45.1 inside its
+# own setuptools/_vendor/ directory. Pinning wheel==0.48.0 in
+# requirements.txt already fixed the real, top-level wheel package (now 0
+# findings there) - it just can't reach into setuptools' internal vendored
+# copies. Not exploitable at runtime for the same reason as jaraco.context:
+# this is setuptools' own build-time tooling, never invoked after the
+# image is built.
+CVE-2026-24049

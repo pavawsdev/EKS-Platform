@@ -1,0 +1,24 @@
+environment: stage
+image:
+  tag: "initial"
+serviceAccount:
+  irsaRoleArn: "arn:aws:iam::887047732645:role/eksplat-stage-worker-irsa"
+env:
+  AWS_REGION: "ap-south-1"
+  SQS_QUEUE_URL: "https://sqs.ap-south-1.amazonaws.com/887047732645/eksplat-stage-jobs"
+vault:
+  enabled: true
+  role: "worker-stage"
+  addr: "https://vault.stage.example.internal"
+  dbSecretPath: "secret/data/stage/db"
+keda:
+  awsRegion: "ap-south-1"
+  cronTimezone: "Asia/Kolkata"
+  cronStart: "0 9 * * *"
+  cronEnd: "0 18 * * *"
+cronjob:
+  # Same placeholder cadence as prod - revisit against actual job volume
+  # before this matters.
+  schedule: "0 * * * *"
+tags:
+  environment: stage

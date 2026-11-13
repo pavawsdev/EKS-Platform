@@ -150,19 +150,21 @@ module "argocd" {
 module "vault" {
   source = "../modules/vault"
 
-  name_prefix                   = local.name_prefix
-  environment                   = local.environment
-  cluster_name                  = module.eks.cluster_name
-  oidc_provider_arn             = module.eks.oidc_provider_arn
-  oidc_provider_url             = module.eks.oidc_provider_url
-  domain_name                   = var.domain_name
-  configure_vault               = var.configure_vault
-  kubernetes_host               = module.eks.cluster_endpoint
-  kubernetes_ca_cert            = base64decode(module.eks.cluster_ca_data)
-  backend_service_account_name  = "backend"
-  frontend_service_account_name = "frontend"
-  worker_service_account_name   = "worker"
-  tags                          = local.common_tags
+  name_prefix                             = local.name_prefix
+  environment                             = local.environment
+  cluster_name                            = module.eks.cluster_name
+  oidc_provider_arn                       = module.eks.oidc_provider_arn
+  oidc_provider_url                       = module.eks.oidc_provider_url
+  domain_name                             = var.domain_name
+  configure_vault                         = var.configure_vault
+  kubernetes_host                         = module.eks.cluster_endpoint
+  kubernetes_ca_cert                      = base64decode(module.eks.cluster_ca_data)
+  backend_service_account_name            = "backend"
+  frontend_service_account_name           = "frontend"
+  worker_service_account_name             = "worker"
+  vulntracker_service_account_name        = "vulntracker"
+  vulntracker_notify_service_account_name = "vulntracker-notify"
+  tags                                    = local.common_tags
 
   depends_on = [module.add_ons]
 }
@@ -175,10 +177,24 @@ module "vault" {
 # they're only created from the dev workspace to avoid a
 # "repository already exists" collision if the prod
 # workspace is ever applied too.
+#
+# backend/frontend stay on their existing customer-managed KMS key -
+# changing a repo's encryption_type isn't an in-place update in ECR's API,
+# it forces Terraform to destroy and recreate the whole repository, which
+# would wipe their real, already-pushed images. vulntracker/vulntracker-
+# notify don't exist yet (nothing to lose), so they go straight to AES256
+# (AWS-managed, free) instead of paying for a dedicated KMS key they don't
+# need. Revisit backend/frontend's KMS key during a deliberate migration
+# window if the ~$1/month ever matters enough to accept the brief
+# empty-repo gap while CI repopulates them.
 ############################################
+locals {
+  ecr_kms_repos = toset(["backend", "frontend"])
+}
+
 resource "aws_kms_key" "ecr" {
   count                   = local.environment == "dev" ? 1 : 0
-  description             = "KMS key for ${var.project_name} ECR repositories"
+  description             = "KMS key for ${var.project_name} ECR repositories (backend/frontend only - see note above)"
   deletion_window_in_days = 30
   enable_key_rotation     = true
   tags                    = local.common_tags
@@ -199,7 +215,7 @@ resource "aws_kms_key" "ecr" {
 
 #checkov:skip=CKV_AWS_51:mutable tags are required so CI can re-push a floating :latest tag alongside each commit-sha tag
 resource "aws_ecr_repository" "this" {
-  for_each = local.environment == "dev" ? toset(["frontend", "backend"]) : toset([])
+  for_each = local.environment == "dev" ? toset(["frontend", "backend", "vulntracker", "vulntracker-notify"]) : toset([])
 
   name                 = "${var.project_name}-${each.key}"
   image_tag_mutability = "MUTABLE" # CI re-pushes a floating :latest tag alongside each commit-sha tag
@@ -209,8 +225,8 @@ resource "aws_ecr_repository" "this" {
   }
 
   encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.ecr[0].arn
+    encryption_type = contains(local.ecr_kms_repos, each.key) ? "KMS" : "AES256"
+    kms_key         = contains(local.ecr_kms_repos, each.key) ? aws_kms_key.ecr[0].arn : null
   }
 
   tags = local.common_tags
@@ -232,6 +248,33 @@ resource "aws_ecr_lifecycle_policy" "this" {
           countNumber = 7
         }
         action = { type = "expire" }
+      }
+    ]
+  })
+}
+
+# Cross-account pull policy so stage/prod's own EKS node role (in their own
+# AWS accounts) can pull images from this (dev/hub) account's ECR without
+# any image copy - "build once, pull everywhere". Principal is each node
+# role's exact ARN (name_prefix convention: "${project_name}-${environment}-
+# eks-node-role"), not the whole account root, so this stays least-privilege.
+# No-op (empty list) until ecr_pull_role_arns is populated with real ARNs.
+resource "aws_ecr_repository_policy" "cross_account_pull" {
+  for_each   = local.environment == "dev" && length(var.ecr_pull_role_arns) > 0 ? aws_ecr_repository.this : {}
+  repository = each.value.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "CrossAccountNodePull"
+        Effect    = "Allow"
+        Principal = { AWS = var.ecr_pull_role_arns }
+        Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:BatchCheckLayerAvailability",
+        ]
       }
     ]
   })
@@ -355,6 +398,99 @@ module "rds" {
   vault_kv_mount             = module.vault.kv_mount_path
   configure_vault            = var.configure_vault
   tags                       = local.common_tags
+
+  depends_on = [module.vault]
+}
+
+############################################
+# VulnTracker - dedicated Postgres schema + role
+# on the shared RDS instance above, rather than a
+# second RDS instance. First per-app DB isolation
+# in this repo - module.rds only ever provisioned
+# one shared database/master credential before this.
+# Gated behind configure_vault since it depends on
+# the master credential (read back via the
+# postgresql provider in providers.tf) and writes
+# its own generated credential to Vault the same way
+# module.rds's own db_credentials secret already does.
+############################################
+resource "random_password" "vulntracker_db" {
+  count            = var.configure_vault ? 1 : 0
+  length           = 24
+  special          = true
+  override_special = "!#$%^&*()-_=+"
+}
+
+resource "postgresql_role" "vulntracker" {
+  count    = var.configure_vault ? 1 : 0
+  name     = "vulntracker_${local.environment}"
+  login    = true
+  password = random_password.vulntracker_db[0].result
+  # The app's SQLAlchemy models/raw SQL use unqualified table names
+  # ("scan_results", not "vulntracker.scan_results") - this makes them
+  # resolve against the vulntracker schema automatically instead of
+  # requiring every query in apps/vulntracker to be schema-qualified.
+  search_path = ["vulntracker"]
+}
+
+resource "postgresql_schema" "vulntracker" {
+  count = var.configure_vault ? 1 : 0
+  name  = "vulntracker"
+  owner = postgresql_role.vulntracker[0].name
+}
+
+# JWT signing key for the FastAPI app (app/config.py's JWT_SECRET_KEY_FILE,
+# mounted in by the Vault Agent Injector - see gitops/apps/vulntracker/values.yaml).
+# url_safe since it's written straight to a file read back as a bearer
+# secret, not a password a human ever types.
+resource "random_password" "vulntracker_jwt" {
+  count   = var.configure_vault ? 1 : 0
+  length  = 48
+  special = false
+}
+
+resource "vault_kv_secret_v2" "vulntracker_db" {
+  count = var.configure_vault ? 1 : 0
+
+  mount = module.vault.kv_mount_path
+  name  = "${local.environment}/vulntracker"
+
+  data_json = jsonencode({
+    username       = postgresql_role.vulntracker[0].name
+    password       = random_password.vulntracker_db[0].result
+    engine         = "postgres"
+    host           = module.rds.db_instance_address
+    port           = 5432
+    dbname         = module.rds.db_name
+    schema         = postgresql_schema.vulntracker[0].name
+    jwt_secret_key = random_password.vulntracker_jwt[0].result
+  })
+
+  depends_on = [module.vault]
+}
+
+# notify/src/dispatcher.js sends this as X-Service-Key on every outbound
+# webhook call it makes (so the receiving endpoint can verify the call came
+# from this notify instance) - it is NOT used to authenticate the inbound
+# POST /notify call from the FastAPI app, which notify's own source
+# explicitly documents as unauthenticated and relying on network isolation
+# (see the NetworkPolicy in gitops/apps/vulntracker-notify restricting ingress to
+# only the vulntracker pod label).
+resource "random_password" "vulntracker_notify_service_key" {
+  count   = var.configure_vault ? 1 : 0
+  length  = 48
+  special = false
+}
+
+resource "vault_kv_secret_v2" "vulntracker_notify" {
+  count = var.configure_vault ? 1 : 0
+
+  mount = module.vault.kv_mount_path
+  name  = "${local.environment}/vulntracker-notify"
+
+  data_json = jsonencode({
+    service_key = random_password.vulntracker_notify_service_key[0].result
+  })
 
   depends_on = [module.vault]
 }
