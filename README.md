@@ -112,7 +112,53 @@ GitHub Environment's required-reviewer rule (see step 4 below) before the
 actual deploy commit happens. `stage` exists today as a third Terraform
 environment (its own workspace, VPC, EKS, RDS) for validating infra changes
 before they reach prod; it does not yet have its own ArgoCD/app-deploy path
-(apps still only ever deploy to `dev` or `prod`).
+(apps still only ever deploy to `dev` or `prod`). Every GitHub Environment
+that can `apply` or `destroy` real infrastructure outside `dev` —
+`stage`, `stage-destroy`, `prod`, `prod-destroy` — requires a human reviewer
+before the job runs; `dev`/`dev-destroy` are deliberately left ungated to
+keep dev's iteration loop fast.
+
+### Account isolation (dev/stage/prod)
+
+`dev`, `stage`, and `prod` are designed to live in **three separate AWS
+accounts**, not just three Terraform workspaces in one account — so that
+even a broken `workflow_dispatch` or a bad `if:` condition in `ci.yml`
+can't accidentally create, modify, or destroy the wrong environment's
+resources. A workflow bug can at most pick the wrong *workspace*; it can
+never reach into another account's credentials, because Terraform's own
+AWS credentials for stage/prod are a different, explicitly-granted role
+that lives in a different account.
+
+This uses a **hub-and-spoke** pattern, not per-account GitHub OIDC:
+GitHub Actions keeps authenticating with the single existing
+`AWS_DEPLOY_ROLE_ARN` role in the hub account (today's account,
+`887047732645`) exactly as before — no new GitHub secrets, no changes to
+any workflow YAML. Only Terraform's own `provider "aws"` block
+(`terraform/environments/providers.tf`) changes: it gains a `dynamic
+"assume_role"` that, for stage/prod, hops into an `eksplat-ci-deploy` role
+living in that environment's own AWS account before creating anything.
+Dev needs no hop and keeps applying directly in the hub account. The
+Terraform state backend (S3/DynamoDB) is unaffected either way — state
+access always uses the job's own CI credentials, resolved before the
+provider block is even parsed.
+
+Two new variables in `terraform/environments/variables.tf` drive this:
+
+- `cross_account_role_arn` — set in `stage/terraform.tfvars` and
+  `prod/terraform.tfvars` once their accounts exist; left empty for `dev`.
+- `ecr_pull_role_arns` — IAM role ARNs (stage/prod's own EKS node roles,
+  in their own accounts) granted pull-only access to the hub account's ECR
+  repositories via a new `aws_ecr_repository_policy.cross_account_pull`
+  resource, so "build once, promote" keeps working without rebuilding or
+  copying images across accounts. Dev-only and a no-op (empty list) until
+  the target accounts/roles exist.
+
+**This scaffolding is in place but not yet cut over** — the 2 new AWS
+accounts don't exist yet. Creating them (via AWS Organizations), creating
+`eksplat-ci-deploy` in each, and pointing `stage`/`prod`'s tfvars at them is
+a deliberate, separate, later step: Terraform cannot move a *live* resource
+between accounts, so an environment's old resources must be fully destroyed
+before its provider is pointed at a new account, never after.
 
 ## How it fits together
 
@@ -392,6 +438,24 @@ leaves the service.
 | `vulntracker-notify` egress blocks `169.254.169.254/32` and the VPC CIDR | `dispatcher.js` POSTs to arbitrary user-registered webhook URLs — without this, a registered "webhook" pointed at the instance metadata endpoint or an internal service is a textbook SSRF |
 | `vulntracker-notify`'s `POST /notify` has no authentication | Documented in its own source as relying entirely on network isolation — the NetworkPolicy restricting ingress to only the `vulntracker` pod is the real access control, not defense-in-depth |
 
+### Risk-accepted CVEs: `.trivyignore`
+
+Trivy's image scan (`_app-ci.yml`/`_app-promote.yml`, `exit-code=1` on
+`CRITICAL`/`HIGH`) is a hard CI gate, completely separate from GitHub's
+Security/code-scanning UI — dismissing an alert there does nothing to this
+gate. Suppressing a specific, already-triaged finding here means adding its
+CVE ID, with reasoning, to that app's `.trivyignore` (e.g.
+`apps/vulntracker/.trivyignore`), passed to the Trivy action via its
+`trivyignores:`/`trivyignore-path:` input. `ignore-unfixed: true` is set
+separately on both scan steps to suppress genuinely unfixable
+base-image/OS-layer findings (no vendor patch exists anywhere) without
+hand-listing them. `.trivyignore` is for the opposite case: a specific,
+reviewed CVE with a documented reason it's either not exploitable in this
+app's usage or not independently fixable (e.g. a CVE vendored inside
+another package's own distribution, like `jaraco.context`/`wheel` bundled
+inside `setuptools`'s `_vendor/` directory — no top-level pip pin can reach
+those copies). Every entry should explain *why*, not just suppress the ID.
+
 ## Bootstrap (one-time, before first `terraform init`)
 
 Terraform state needs somewhere to live before any workspace can be created:
@@ -420,8 +484,11 @@ Also create, in GitHub:
   Manager entry (so Terraform can create the secret container and CI can
   populate + later read it).
 - GitHub Environments named `dev`, `stage`, and `prod` (and `<env>-plan`,
-  `<env>-destroy`) so you can attach required-reviewer approval rules if
-  you want manual gates on apply.
+  `<env>-destroy`). Attach a required-reviewer rule to `stage`,
+  `stage-destroy`, `prod`, and `prod-destroy` — this repo's own `apply`/
+  `destroy` jobs gate on exactly that rule, so an environment without it
+  applies/destroys with no human approval at all. `dev`/`dev-destroy` are
+  deliberately left unprotected for fast iteration.
 
 ## Using Terraform workspaces
 
@@ -454,6 +521,14 @@ Every resource is tagged with `Environment = terraform.workspace` plus
 `Project`, `ManagedBy`, `Workspace`, `CostCenter`, and `Owner` (see
 `terraform/environments/locals.tf`), so cost and ownership are traceable
 per workspace in the AWS console/Cost Explorer.
+
+ECR repositories are encrypted per-repository, not uniformly: `backend`
+and `frontend` (which hold real, already-pushed images) stay on `KMS`;
+`vulntracker` and `vulntracker-notify` (new, empty repos) use the free
+`AES256` type instead. `encryption_configuration.encryption_type` isn't
+updatable in place — changing it forces a destroy-and-recreate of the
+whole repository — so this split is deliberate, not an oversight, and is
+only safe to apply to repos that have no images to lose yet.
 
 `environment_config` in `variables.tf` is keyed by workspace name and
 drives the real differences between environments:
@@ -516,3 +591,8 @@ aws ssm start-session --target <bastion-instance-id>
   of the ALB by default in every environment.
 - Every CI pipeline run is gated by SAST, secret scanning, dependency
   scanning, and container image scanning before anything reaches ECR.
+- `stage` and `prod` are designed to run in their own, separate AWS
+  accounts from `dev` (see "Account isolation" above) — a blast-radius
+  boundary that holds even if a workflow's own conditional logic has a bug,
+  since it would still need a different, explicitly-granted credential to
+  touch another account's resources.
