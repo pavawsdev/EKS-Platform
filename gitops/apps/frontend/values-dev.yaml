@@ -3,7 +3,7 @@ replicaCount: 1
 autoscaling:
   enabled: false
 image:
-  tag: "64ff3242"
+  tag: "a2d09d75"
 ingress:
   host: dev.example.internal
 tags:
