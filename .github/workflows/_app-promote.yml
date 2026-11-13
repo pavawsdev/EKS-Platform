@@ -158,8 +158,13 @@ jobs:
     needs: [read-tag, rescan]
     environment: prod
     runs-on: ubuntu-latest
+    # Scoped per-service, not just per-ref: different services write to
+    # different gitops/apps/<service>/values-prod.yaml files and never
+    # conflict with each other. A shared ref-only group collided all 4
+    # promote-* calls from ci.yml into one lane on the same run, and the
+    # overflow beyond the first 2 got silently cancelled instead of queued.
     concurrency:
-      group: gitops-manifest-${{ github.ref_name }}
+      group: gitops-manifest-${{ github.ref_name }}-${{ inputs.service-name }}
       cancel-in-progress: false
     permissions:
       id-token: write
